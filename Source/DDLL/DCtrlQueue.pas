@@ -5,11 +5,12 @@ interface
 uses
   Windows, ActiveX, Classes, ComObj;
 
-function CtrlQueueI(mode: longint; arg: longint):longint;stdcall;
+function CtrlQueueI(mode: longint; arg: longint):longint;cdecl;
+procedure CtrlQueueV(mode:longint; out arg:variant);cdecl;
 
 implementation
 
-uses ComServ, DSSGlobals, ControlQueue, ControlElem, DSSClass;
+uses ComServ, DSSGlobals, ControlQueue, ControlElem, DSSClass,Variants;
 
 Type
   pAction = ^Taction;
@@ -86,7 +87,7 @@ begin
 
 end;
 
-function CtrlQueueI(mode: longint; arg: longint):longint;stdcall;
+function CtrlQueueI(mode: longint; arg: longint):longint;cdecl;
 
 var
     COMControlProxyObj :TCOMControlProxyObj;
@@ -140,10 +141,46 @@ begin
   9: begin  // CtrlQueue.PopAction
      Result := COMControlProxyObj.ActionList.Count;
      COMControlProxyObj.PopAction;
+  end;
+  10: begin // CtrlQueue.Get_QueueSize
+     If ActiveCircuit <> Nil then Begin
+        Result := ActiveCircuit.ControlQueue.QueueSize;
+     End;
+  end;
+  11: begin // CtrlQueue.DoAllQueue
+     If ActiveCircuit <> Nil then Begin
+        ActiveCircuit.ControlQueue.DoAllActions;
+     End;
   end
   else
       Result:=-1;
   end;
 end;
+
+procedure CtrlQueueV(mode:longint; out arg:variant);cdecl;
+Var
+  i     : integer;
+  Qsize : integer;
+Begin
+  case mode of
+  0: begin  // CtrlQueue.ClearQueue
+      arg  := VarArrayCreate([0, 0], varOleStr);
+      QSize   := ActiveCircuit.ControlQueue.QueueSize;
+      if QSize > 0 then
+      begin
+        VarArrayRedim(arg, QSize);
+        arg[0]:='Handle, Hour, Sec, ActionCode, ProxyDevRef, Device';
+        For i := 0 to QSize-1 do
+          Begin
+            arg[i+1]:= ActiveCircuit.ControlQueue.QueueItem(i);
+          End;
+      end
+      else arg[0]:='No events';
+  end
+  else
+    arg   := VarArrayCreate([0, 0], varOleStr);
+    arg[0]:='Mode not recognized';
+  end;
+End;
 
 end.

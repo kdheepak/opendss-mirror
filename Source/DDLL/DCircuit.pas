@@ -2,10 +2,10 @@ unit DCircuit;
 
 interface
 
-function CircuitI(mode:longint; arg: longint):longint;stdcall;
-function CircuitF(mode:longint; arg1, arg2: double):double;stdcall;
-function CircuitS(mode:longint; arg: pAnsiChar):pAnsiChar;stdcall;
-procedure CircuitV(mode:longint; out arg: Olevariant; arg2: longint);stdcall;
+function CircuitI(mode:longint; arg: longint):longint;cdecl;
+function CircuitF(mode:longint; arg1, arg2: double):double;cdecl;
+function CircuitS(mode:longint; arg: pAnsiChar):pAnsiChar;cdecl;
+procedure CircuitV(mode:longint; out arg:variant; arg2: longint);cdecl;
 
 implementation
 
@@ -27,9 +27,10 @@ uses DSSClassDefs,
      Variants,
      arrayDef,
      Utilities,
-     SolutionAlgs;
+     SolutionAlgs,
+     KLUSolve;
 
-function CircuitI(mode:longint; arg: longint):longint;stdcall;
+function CircuitI(mode:longint; arg: longint):longint;cdecl;
 
 var
 
@@ -190,7 +191,7 @@ begin
 end;
 
 //**************************floating point properties*****************************
-function CircuitF(mode:longint; arg1, arg2: double):double;stdcall;
+function CircuitF(mode:longint; arg1, arg2: double):double;cdecl;
 begin
   Result:=0.0; // Default return value
   case mode of
@@ -214,7 +215,7 @@ begin
 end;
 
 //**************************String type properties*****************************
-function CircuitS(mode:longint; arg: pAnsiChar):pAnsiChar;stdcall;
+function CircuitS(mode:longint; arg: pAnsiChar):pAnsiChar;cdecl;
 
 var
 
@@ -270,7 +271,7 @@ begin
   end;
 end;
 //**************************Variant type properties*****************************
-procedure CircuitV(mode:longint; out arg: Olevariant; arg2: longint);stdcall;
+procedure CircuitV(mode:longint; out arg:variant; arg2: longint);cdecl;
 
 var
    LossValue :complex;
@@ -605,7 +606,7 @@ begin
        k:=0;
        FOR i := 1 to NumBuses DO
        Begin
-           NodeIdx := Buses^[i].FindIdx(integer(arg));
+           NodeIdx := Buses^[i].FindIdx(integer(arg2));
            If NodeIdx > 0 then   // Node found with this phase number
            Begin
                 Inc(k);
@@ -632,7 +633,7 @@ begin
        // Find nodes connected to specified phase
        k:=0;
        FOR i := 1 to NumBuses DO  Begin
-           NodeIdx := Buses^[i].FindIdx(integer(arg));
+           NodeIdx := Buses^[i].FindIdx(integer(arg2));
            If NodeIdx > 0 then   // Node found with this phase number
            Begin
                 Inc(k);

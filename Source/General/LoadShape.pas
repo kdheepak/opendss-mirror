@@ -88,6 +88,7 @@ TYPE
         iMaxP:integer;
 
         FStdDevCalculated :Boolean;
+        MaxQSpecified     :Boolean;
         FMean,
         FStdDev :Double;
 
@@ -207,7 +208,7 @@ Begin
 
      PropertyHelp[1] := 'Max number of points to expect in load shape vectors. This gets reset to the number of multiplier values found (in files only) if less than specified.';     // Number of points to expect
      PropertyHelp[2] := 'Time interval for fixed interval data, hrs. Default = 1. '+
-                        'If Interval = 0 then time data (in hours) may be at irregular intervals and time value must be specified using either the Hour property or input files. ' +
+                        'If Interval = 0 then time data (in hours) may be at either regular or  irregular intervals and time value must be specified using either the Hour property or input files. ' +
                         'Then values are interpolated when Interval=0, but not for fixed interval data.  ' +CRLF+CRLF+
                         'See also "sinterval" and "minterval".'; // default = 1.0;
      PropertyHelp[3] := 'Array of multiplier values for active power (P) or other key value (such as pu V for Vsource). ' + CRLF+  CRLF +
@@ -218,8 +219,8 @@ Begin
                         'mult = (file=MyCSVFile.CSV, col=3, header=yes)  !for multicolumn CSV files '+CRLF+CRLF+
                         'Note: this property will reset Npts if the  number of values in the files are fewer.' + CRLF+CRLF+
                         'Same as Pmult';     // vector of power multiplier values
-     PropertyHelp[4] := 'Array of hour values. Only necessary to define for variable interval data.'+
-                    ' If the data are FIXED interval, DO NOT USE THIS PROPERTY. ' +
+     PropertyHelp[4] := 'Array of hour values. Only necessary to define for variable interval data (Interval=0).'+
+                    ' If you set Interval>0 to denote fixed interval data, DO NOT USE THIS PROPERTY. ' +
                     'You can also use the syntax: '+CRLF+
                         'hour = (file=filename)     !for text file one value per line'+CRLF+
                         'hour = (dblfile=filename)  !for packed file of doubles'+CRLF+
@@ -360,6 +361,7 @@ BEGIN
                             ArrayPropertyIndex := ParamPointer;
                             NumPoints := FNumPoints;  // Keep Properties in order for save command
                        END;
+           14: MaxQSpecified := TRUE;
 
          END;
 
@@ -669,6 +671,7 @@ BEGIN
      BaseP        := 0.0;
      BaseQ        := 0.0;
      UseActual    := FALSE;
+     MaxQSpecified := FALSE;
      FStdDevCalculated := FALSE;  // calculate on demand
 
      ArrayPropertyIndex := 0;
@@ -1160,8 +1163,9 @@ begin
        iMaxP := iMaxAbsdblArrayValue(NumPoints, PMultipliers);
        If iMaxP > 0 Then Begin
           MaxP := PMultipliers^[iMaxP];
-          If Assigned(QMultipliers) then  MaxQ := QMultipliers^[iMaxP]
-          else MaxQ := 0.0;
+          If Not MaxQSpecified Then
+            If Assigned(QMultipliers) then  MaxQ := QMultipliers^[iMaxP]
+            else MaxQ := 0.0;
        End;
 end;
 

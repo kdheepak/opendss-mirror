@@ -95,6 +95,7 @@ type
     function Get_YNodeVarray: OleVariant; safecall;
     function Get_PVSystems: IPVSystems; safecall;
     function Get_Vsources: IVsources; safecall;
+    function Get_LineCodes: ILineCodes; safecall;
 //    function Get_Loads: ILoads; safecall;  function ICircuit.Get_Loads = ICircuit_Get_Loads;
 
 //  function ICircuit_Get_Loads: IUnknown; safecall;
@@ -125,7 +126,8 @@ uses ComServ,
      Variants,
      arrayDef,
      Utilities,
-     SolutionAlgs;
+     SolutionAlgs,
+     KLUSolve;
 
 function TCircuit.Get_Buses(Index: OleVariant): IBus;
 
@@ -723,7 +725,8 @@ Var
    iV               :LongWord;
    i,j,p            :LongWord;
    NValues          :LongWord;
-   hY, nBus, nNZ    :LongWord;
+   hY               :NativeUint;
+   nBus, nNZ        :LongWord;
    ColPtr, RowIdx   :array of LongWord;
    cVals            :array of Complex;
 
@@ -1201,6 +1204,11 @@ end;
 function TCircuit.Get_Vsources: IVsources;
 begin
      Result := FVsources as IVSources;
+end;
+
+function TCircuit.Get_LineCodes: ILineCodes;
+begin
+     Result := FLineCodes as ILineCodes;
 end;
 
 initialization

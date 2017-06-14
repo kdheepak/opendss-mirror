@@ -41,6 +41,9 @@ TYPE
        PROCEDURE InterpretAllkVRatings(const S:String);
        PROCEDURE InterpretAllkVARatings(const S:String);
        PROCEDURE InterpretAllRs(const S:String);
+       FUNCTION  TrapZero(const Value:Double; DefaultValue:Double):Double;
+       FUNCTION  InterpretLeadLag(const S:String):Boolean;
+
        {PROCEDURE MakeNewBusNameForNeutral(Var NewBusName:String; Nphases:Integer);}
      Protected
        PROCEDURE DefineProperties;
@@ -142,6 +145,8 @@ TYPE
         pctLoadLoss       :Double;
         pctNoLoadLoss     :Double;
 
+        HVLeadsLV         :Boolean;
+
         XHLChanged        :Boolean;
 
         PROCEDURE SetTermRef;
@@ -223,7 +228,7 @@ USES    DSSClassDefs, DSSGlobals, Sysutils, Utilities, XfmrCode;
 var
    XfmrCodeClass:TXfmrCode;
 
-Const NumPropsThisClass = 43;
+Const NumPropsThisClass = 44;
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 constructor TTransf.Create;  // Creates superstructure for all Transformer objects
@@ -309,6 +314,7 @@ Begin
      PropertyName[41] := 'X12';
      PropertyName[42] := 'X13';
      PropertyName[43] := 'X23';
+     PropertyName[44] := 'LeadLag';
 
      // define Property help values
      PropertyHelp[1] := 'Number of phases this transformer. Default is 3.';
@@ -388,6 +394,9 @@ Begin
                          'for 3-winding transformers only. Percent on the kVA base of winding 1. ';
      PropertyHelp[43] := 'Alternative to XLT for specifying the percent reactance from winding 2 to winding 3.Use '+
                          'for 3-winding transformers only. Percent on the kVA base of winding 1.  ';
+     PropertyHelp[44] := '{Lead | Lag (default) | ANSI (default) | Euro } Designation in mixed Delta-wye connections the '+
+                         'relationship between HV to LV winding. Default is ANSI 30 deg lag, e.g., Dy1 of Yd1 vector group. ' +
+                         'To get typical European Dy11 connection, specify either "lead" or "Euro"';
 
      ActiveProperty := NumPropsThisClass;
      inherited DefineProperties;  // Add defs of inherited properties to bottom of list
@@ -457,9 +466,9 @@ Begin
            14: InterpretAllkVRatings(Param);
            15: InterpretAllkVARatings(Param);
            16: InterpretAllTaps(Param);
-           17: XHL :=  parser.Dblvalue * 0.01;
-           18: XHT :=  parser.Dblvalue * 0.01;
-           19: XLT :=  parser.Dblvalue * 0.01;
+           17: XHL :=  TrapZero(parser.Dblvalue, 7.0) * 0.01;
+           18: XHT :=  TrapZero(parser.Dblvalue, 35.0) * 0.01;
+           19: XLT :=  TrapZero(parser.Dblvalue, 30.0) * 0.01;
            20: Parser.ParseAsVector(((NumWindings - 1) * NumWindings div 2), Xsc);
            21: ThermalTimeConst := Parser.DblValue;
            22: n_thermal        := Parser.DblValue;
@@ -481,9 +490,10 @@ Begin
            38: XfmrBank := Param;
            39: FetchXfmrCode (Param);
            40: XRConst := InterpretYesNo(Param);
-           41: XHL :=  parser.Dblvalue * 0.01;
-           42: XHT :=  parser.Dblvalue * 0.01;
-           43: XLT :=  parser.Dblvalue * 0.01;
+           41: XHL :=  TrapZero(parser.Dblvalue, 7.0) * 0.01;
+           42: XHT :=  TrapZero(parser.Dblvalue, 35.0) * 0.01;
+           43: XLT :=  TrapZero(parser.Dblvalue, 30.0) * 0.01;
+           44: HVLeadsLV := InterpretLeadLag(Param);
          ELSE
            // Inherited properties
               ClassEdit(ActiveTransfObj, ParamPointer - NumPropsThisClass)
@@ -547,6 +557,16 @@ Begin
     IF   (w > 0) And (w <= NumWindings) THEN ActiveWinding := w
     ELSE DoSimpleMsg('Wdg parameter invalid for "' + ActiveTransfObj.Name + '"', 112);
 End;
+
+function TTransf.TrapZero(const Value: Double; DefaultValue: Double): Double;
+begin
+     if Value=0.0 then
+     Begin
+       Dosimplemsg('Zero Reactance specified for Transformer.' + ActiveTransfObj.Name, 11201);
+       Result := DefaultValue;
+     End
+     else Result := Value;
+end;
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 PROCEDURE TTransf.InterpretConnection(const S:String);
@@ -614,6 +634,22 @@ Begin
            BusNam := AuxParser.StrValue;
            IF Length(BusNam)>0 THEN SetBus(ActiveWinding, BusNam);
       End;
+
+End;
+
+
+//- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+FUNCTION TTransf.InterpretLeadLag(const S:String):Boolean;
+//  routine expecting all winding bus connections expressed in one array of strings
+VAR
+    BusNam  :String;
+    i       :Integer;
+Begin
+
+    Result := FALSE;   // default to ANSI 30 Deg Lag if can't understand S
+
+    if CompareTextShortest(S, 'lead')=0       then Result := TRUE
+    Else if CompareTextShortest(S, 'euro')=0  then   Result := TRUE;
 
 End;
 
@@ -841,6 +877,8 @@ Begin
   IsSubstation  := FALSE;
   XRConst       := FALSE;
 
+  HVLeadsLV     := FALSE; // Defaults to ANSI connection
+
   Y_Terminal_FreqMult := 0.0;
 
   Yorder := fNTerms * fNconds;
@@ -910,9 +948,7 @@ VAR
    i,
    ihvolt   :Integer;
    VFactor  :Double;
-{$IFDEF TRANSDEBUG}
-   F        :Textfile;
-{$ENDIF}
+
 
 Begin
 
@@ -923,8 +959,8 @@ Begin
    Else Begin
      If Winding^[1].kvll >= Winding^[2].kvll Then iHvolt:=1 else iHVolt := 2;
      CASE Winding^[iHvolt].Connection of
-       0:  DeltaDirection := 1;
-       1:  DeltaDirection := -1;
+       0:  If HVLeadsLV then DeltaDirection := -1 Else DeltaDirection := 1;
+       1:  If HVLeadsLV then DeltaDirection := 1  Else DeltaDirection := -1;
      ELSE
          // ---old code --- If Winding^[2].Connection = 0 Then DeltaDirection := -1 Else DeltaDirection := 1;
      END;
@@ -1107,6 +1143,7 @@ PROCEDURE TTransfObj.DumpProperties(Var F:TextFile;Complete:Boolean);
 
 VAR
    i,j:Integer;
+   ZBtemp: Tcmatrix;
 
 Begin
     Inherited DumpProperties(F,Complete);
@@ -1161,6 +1198,25 @@ Begin
     End;
 
     IF Complete THEN Begin
+        Writeln(F);
+        ZBTemp := TCmatrix.CreateMatrix(NumWindings-1);
+        ZBTemp.CopyFrom(ZB);
+        ZBTemp.Invert;
+
+        Writeln(F,'ZB:');
+        WITH ZBTemp Do Begin
+           FOR i := 1 to NumWindings-1 Do Begin
+               FOR j := 1 to i Do Write(F, format('%g ',[GetElement(i,j).re]));
+               Writeln(F);
+           End;
+           FOR i := 1 to NumWindings-1 Do Begin
+               FOR j := 1 to i Do Write(F, format('%g ',[GetElement(i,j).im]));
+               Writeln(F);
+           End;
+        End;  {WITH}
+
+        ZBTemp.Free;
+
         Writeln(F);
         Writeln(F,'ZB: (inverted)');
         WITH ZB Do Begin
@@ -1556,6 +1612,7 @@ begin
      PropertyValue[41] := '7';   // Same as XHT ...
      PropertyValue[42] := '35';
      PropertyValue[43] := '30';
+     PropertyValue[44] := 'Lag';
 
 
   inherited  InitPropertyValues(NumPropsThisClass);
@@ -1730,7 +1787,9 @@ Var
     AT         :TcMatrix;
     Yadder     :Complex;
     Rmult      :Double;
-
+{$IFDEF TRANSDEBUG}
+   F        :Textfile;
+{$ENDIF}
     {Function to fix a specification of a pu tap of 0.0}
     {Regcontrol can attempt to force zero tap position in some models}
     function ZeroTapFix(const tapvalue:Double):Double;
@@ -1832,7 +1891,7 @@ begin
 {******************************DEBUG******************************************************}
 {$IFDEF TRANSDEBUG}
      Writeln(F,'Y_OneVolt ...');
-     DumpComplexMatrix(F, Y_OneVolt);
+     DumpComplexMatrix(F, Y_1Volt);
 {$ENDIF}
 {*****************************************************************************************}
    // should have admittance of one phase of the transformer on a one-volt, wye-connected base
@@ -1873,7 +1932,7 @@ begin
 {******************************DEBUG******************************************************}
 {$IFDEF TRANSDEBUG}
      Writeln(F,'Y_Terminal before adding small element to diagonals ...');
-     DumpComplexMatrix(F, Y_Terminal);
+     DumpComplexMatrix(F, Y_Term);
 {$ENDIF}
 {*****************************************************************************************}
 
@@ -1892,7 +1951,7 @@ begin
 {******************************DEBUG******************************************************}
 {$IFDEF TRANSDEBUG}
      Writeln(F,'Y_Terminal after adding small element to diagonals ...');
-     DumpComplexMatrix(F, Y_Terminal);
+     DumpComplexMatrix(F, Y_Term);
      CloseFile(F);
 {$ENDIF}
 {*****************************************************************************************}

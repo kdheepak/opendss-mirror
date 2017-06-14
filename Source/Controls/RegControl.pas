@@ -76,6 +76,9 @@ TYPE
         ReversePending :Boolean;
         ReverseNeutral :Boolean;
 
+        RevHandle      :Integer;
+        RevBackHandle  :Integer;
+
         LDCActive         :Boolean;
         UsingRegulatedBus :Boolean;
         RegulatedBus      :String;
@@ -96,6 +99,8 @@ TYPE
         FPTphase          :Integer;
         ControlledPhase   :Integer;
 
+        ControlActionHandle :Integer;
+
         VBuffer, CBuffer  :pComplexArray;
 
         FUNCTION Get_Transformer  :TTransfObj;
@@ -110,9 +115,9 @@ TYPE
         PROCEDURE RegWriteTraceRecord(TapChangeMade:Double);
         PROCEDURE RegWriteDebugRecord(S:String);
         procedure set_PendingTapChange(const Value: Double);
-        FUNCTION AtLeastOneTap(Const ProposedChange:Double; Increment:Double):Double;
-        Function ComputeTimeDelay(Vavg:Double):Double;
-        Function GetControlVoltage(VBuffer:pComplexArray; Nphs:Integer; PTRatio:Double ):Complex;
+        FUNCTION  AtLeastOneTap(Const ProposedChange:Double; Increment:Double):Double;
+        Function  ComputeTimeDelay(Vavg:Double):Double;
+        Function  GetControlVoltage(VBuffer:pComplexArray; Nphs:Integer; PTRatio:Double ):Complex;
         Procedure Set_TapNum(const Value: Integer);
 
      public
@@ -528,6 +533,9 @@ Begin
     InReverseMode  := FALSE;
     ReverseNeutral := FALSE;
 
+    RevHandle      := 0;
+    RevBackHandle  := 0;
+
      ElementName       := '';
      ControlledElement := nil;
      ElementTerminal   := 1;
@@ -542,6 +550,9 @@ Begin
      FInversetime := FALSE;
      RegulatedBus := '';
      Vlimit := 0.0;
+
+     ControlActionHandle := 0;
+
    //  RecalcElementData;
 
 End;
@@ -835,6 +846,18 @@ begin
                               ELSE Armed := FALSE;
                           End;
 
+                       MULTIRATE:
+                          Begin
+                              TapChangeToMake := OneInDirectionOf(FPendingTapChange, TapIncrement[TapWinding]);
+                              If (DebugTrace) Then RegWriteTraceRecord(TapChangeToMake);
+                              PresentTap[TapWinding] := PresentTap[TapWinding] + TapChangeToMake;
+                              If ShowEventLog Then AppendtoEventLog('Regulator.' + ControlledElement.Name, Format(' Changed %d tap to %-.6g.',[Lastchange,PresentTap[TapWinding]]));
+                              If (DebugTrace) Then RegWriteDebugRecord(Format('--- Regulator.%s Changed %d tap to %-.6g.',[ControlledElement.Name, Lastchange,PresentTap[TapWinding]]));
+
+                              IF   PendingTapChange <> 0.0 THEN ControlQueue.Push(DynaVars.intHour, DynaVars.t + TapDelay, 0, 0, Self)
+                              ELSE Armed := FALSE;
+                          End;
+
                     End;
                  End;
             End;
@@ -863,6 +886,8 @@ VAR
    BoostNeeded,
    Increment,
    Vactual,
+   VregTest,
+   BandTest,
    Vboost    :Double;
    VlocalBus :Double;
    FwdPower  :Double;
@@ -870,6 +895,7 @@ VAR
    VLDC,
    ILDC      :Complex;
    TapChangeIsNeeded :Boolean;
+   LookingForward    :Boolean;
    i,ii      :Integer;
    ControlledTransformer :TTransfObj;
    TransformerConnection :Integer;
@@ -882,6 +908,8 @@ begin
         Exit;
      end;
 
+     LookingForward := not InReverseMode;
+
      {First, check the direction of power flow to see if we need to reverse direction}
      {Don't do this if using regulated bus logic}
      If Not UsingRegulatedBus Then
@@ -889,35 +917,55 @@ begin
          If IsReversible Then
          Begin
 
-              If Not InReverseMode Then   // If looking forward, check to see if we should reverse
+              If LookingForward Then   // If looking forward, check to see if we should reverse
                 Begin
+                  FwdPower := -ControlledTransformer.Power[ElementTerminal].re;  // watts
                   If Not ReversePending Then  // If reverse is already pending, don't send any more messages
                   Begin
-                    FwdPower := -ControlledTransformer.Power[ElementTerminal].re;  // watts
-                    If (FwdPower < -RevPowerThreshold) Then
-                    Begin
-                        If (DebugTrace) Then RegWriteDebugRecord(Format('Pushing Reverse Action, FwdPower=%.8g',[FwdPower]));
-                        ReversePending := TRUE;
-                        WITH ActiveCircuit Do
-                             ControlQueue.Push(Solution.DynaVars.intHour, Solution.DynaVars.t + RevDelay, ACTION_REVERSE, 0, Self);
-                    End
-                    Else ReversePending := FALSE; // Reset it if power goes back
+                        If (FwdPower < -RevPowerThreshold) Then
+                        Begin
+                            ReversePending := TRUE;
+                            WITH ActiveCircuit Do
+                                 RevHandle := ControlQueue.Push(Solution.DynaVars.intHour, Solution.DynaVars.t + RevDelay, ACTION_REVERSE, 0, Self);
+                            If (DebugTrace) Then RegWriteDebugRecord(Format('Pushed Reverse Action, Handle=%d, FwdPower=%.8g',[RevHandle, FwdPower]));
+                        End
+                  End;
+                  if ReversePending and (FwdPower >= -RevPowerThreshold) then // Reset  reverse pending
+                  Begin
+                      ReversePending := FALSE; // Reset it if power goes back
+                      if RevHandle > 0  then
+                      Begin
+                             If (DebugTrace) Then RegWriteDebugRecord(Format('Deleting Reverse Action, Handle=%d', [RevHandle]));
+                             ActiveCircuit.ControlQueue.Delete(RevHandle);
+                             RevHandle := 0;   // reset for next time
+                      End;
                   End;
                 End
-              Else
+
+              Else      // Looking the reverse direction
+
                 Begin   // If reversed look to see if power is back in forward direction
-                  If Not ReversePending Then
-                  Begin
-                    FwdPower := -ControlledTransformer.Power[ElementTerminal].re;  // watts
-                    If (FwdPower > RevPowerThreshold) Then
-                    Begin
-                        If (DebugTrace) Then RegWriteDebugRecord(Format('Pushing Reverse Action to switch back, FwdPower=%.8g',[FwdPower]));
-                        ReversePending := TRUE;
-                        WITH ActiveCircuit Do
-                             ControlQueue.Push(Solution.DynaVars.intHour, Solution.DynaVars.t + RevDelay, ACTION_REVERSE, 0, Self);
-                    End
-                    Else ReversePending := FALSE; // Reset it if power went back to reverse
-                  End;
+                      FwdPower := -ControlledTransformer.Power[ElementTerminal].re;  // watts
+                      If Not ReversePending Then
+                      Begin
+                            If (FwdPower > RevPowerThreshold) Then
+                            Begin
+                                ReversePending := TRUE;
+                                WITH ActiveCircuit Do
+                                     RevBackHandle := ControlQueue.Push(Solution.DynaVars.intHour, Solution.DynaVars.t + RevDelay, ACTION_REVERSE, 0, Self);
+                                If (DebugTrace) Then RegWriteDebugRecord(Format('Pushed ReverseBack Action to switch back, Handle=%d, FwdPower=%.8g',[RevBackHandle, FwdPower]));
+                            End
+                      End;
+                      if ReversePending and (FwdPower <= RevPowerThreshold) then // Reset  reverse pending                            Else
+                      Begin
+                          ReversePending := FALSE; // Reset it if power goes back
+                          if RevBackHandle > 0  then
+                          Begin
+                                 If (DebugTrace) Then RegWriteDebugRecord(Format('Deleting ReverseBack Action, Handle=%d',[RevBackHandle]));
+                                 ActiveCircuit.ControlQueue.Delete(RevBackHandle);
+                                 RevBackHandle := 0;   // reset for next time
+                          End;
+                      End;
 
                   {Check for special case of Reverse Neutral where regulator is to move to neutral position}
                   With ControlledTransformer Do
@@ -948,37 +996,38 @@ begin
 
 
      If UsingRegulatedBus Then
-     Begin
+       Begin
           TransformerConnection := ControlledTransformer.Winding^[ElementTerminal].Connection;
           ComputeVTerminal;   // Computes the voltage at the bus being regulated
-          FOR i := 1 to Fnphases Do
+          For i := 1 to Fnphases Do
           Begin
                 CASE TransformerConnection OF
                   0:Begin      // Wye
                          VBuffer^[i] := Vterminal^[i];
                     End;
                   1:Begin   // Delta
-                         ii := ControlledTransformer.RotatePhases(i);      // Get next phase in sequence using Transformer Obj rotate
+                         ii          := ControlledTransformer.RotatePhases(i);      // Get next phase in sequence using Transformer Obj rotate
                          VBuffer^[i] := CSub(Vterminal^[i], Vterminal^[ii]);
                     End
                 End;
           End;
           Vcontrol := GetControlVoltage(VBuffer, Fnphases, RemotePTRatio );
-     End
-     Else Begin
+       End
+     Else
+       Begin
           ControlledTransformer.GetWindingVoltages(ElementTerminal, VBuffer);
           Vcontrol := GetControlVoltage(VBuffer, Fnphases, PTRatio );
-     End;
+       End;
 
      // Check Vlimit
      If VlimitActive then
        Begin
-            If UsingRegulatedBus then
+          If UsingRegulatedBus then
               Begin
                  ControlledTransformer.GetWindingVoltages(ElementTerminal, VBuffer);
                  Vlocalbus := Cabs(CDivReal(VBuffer^[1], PTRatio ));
               End
-            Else
+          Else
               Begin
                   Vlocalbus := Cabs(Vcontrol);
               End;
@@ -987,20 +1036,30 @@ begin
 
      // Check for LDC
      IF NOT UsingRegulatedBus and LDCActive Then
-       Begin
-            ControlledElement.GetCurrents(Cbuffer);
-            ILDC  := CDivReal(CBuffer^[ControlledElement.Nconds*(ElementTerminal-1) + ControlledPhase], CTRating);
-            If InReverseMode Then VLDC  := Cmul(Cmplx(revR, revX), ILDC) else VLDC  := Cmul(Cmplx(R, X), ILDC);
-            Vcontrol := Cadd(Vcontrol, VLDC);   // Direction on ILDC is INTO terminal, so this is equivalent to Vterm - (R+jX)*ILDC
-       End;
+     Begin
+        ControlledElement.GetCurrents(Cbuffer);
+        ILDC  := CDivReal(CBuffer^[ControlledElement.Nconds*(ElementTerminal-1) + ControlledPhase], CTRating);
+        If InReverseMode Then VLDC  := Cmul(Cmplx(revR, revX), ILDC) else VLDC  := Cmul(Cmplx(R, X), ILDC);
+        Vcontrol := Cadd(Vcontrol, VLDC);   // Direction on ILDC is INTO terminal, so this is equivalent to Vterm - (R+jX)*ILDC
+     End;
 
-     Vactual := Cabs(Vcontrol);
+     Vactual := Cabs(Vcontrol);   // Assumes looking forward; see below
 
-     WITH   ControlledTransformer Do
+     WITH  ControlledTransformer Do
        BEGIN
          // Check for out of band voltage
-         IF (Abs(Vreg - Vactual) > Bandwidth / 2.0) Then TapChangeIsNeeded := TRUE
-                                                    Else TapChangeIsNeeded := FALSE;
+         if InReverseMode then
+         Begin
+            Vactual := Vactual /  PresentTap[TapWinding];
+            VregTest := RevVreg;
+            BandTest := RevBandwidth;
+         End Else
+         Begin
+            VregTest := Vreg;
+            BandTest := Bandwidth;
+         End;
+         IF (Abs(VregTest - Vactual) > BandTest / 2.0) Then TapChangeIsNeeded := TRUE
+                                                       Else TapChangeIsNeeded := FALSE;
 
          If Vlimitactive Then
             If (Vlocalbus > Vlimit) Then TapChangeIsNeeded := TRUE;
@@ -1008,7 +1067,7 @@ begin
          If TapChangeIsNeeded then
            BEGIN
                 // Compute tapchange
-                Vboost := (Vreg - Vactual);
+                Vboost := (VregTest - Vactual);
                 If Vlimitactive then If (Vlocalbus > Vlimit) then Vboost := (Vlimit - Vlocalbus);
                 BoostNeeded      := Vboost * PTRatio / BaseVoltage[ElementTerminal];  // per unit Winding boost needed
                 Increment        := TapIncrement[TapWinding];
@@ -1024,25 +1083,35 @@ begin
                      // Now see if any tap change is possible in desired direction  Else ignore
                      IF PendingTapChange > 0.0 THEN
                        Begin
-                         IF   PresentTap[TapWinding] < MaxTap[TapWinding]  THEN
-                         WITH ActiveCircuit Do Begin
-                               ControlQueue.Push(Solution.DynaVars.intHour, Solution.DynaVars.t + ComputeTimeDelay(Vactual), ACTION_TAPCHANGE, 0, Self);
-                               Armed := TRUE;  // Armed to change taps
-                         End;
+                         IF  PresentTap[TapWinding] < MaxTap[TapWinding]  THEN
+                             WITH ActiveCircuit Do Begin
+                                   ControlActionHandle := ControlQueue.Push(Solution.DynaVars.intHour, Solution.DynaVars.t + ComputeTimeDelay(Vactual), ACTION_TAPCHANGE, 0, Self);
+                                   Armed := TRUE;  // Armed to change taps
+                             End;
                        End
                      ELSE
                        Begin
-                         IF   PresentTap[TapWinding] > MinTap[TapWinding]  THEN
-                         WITH ActiveCircuit Do Begin
-                               ControlQueue.Push(Solution.DynaVars.intHour, Solution.DynaVars.t + ComputeTimeDelay(Vactual), ACTION_TAPCHANGE, 0, Self);
-                               Armed := TRUE;  // Armed to change taps
-                         End;
+                         IF  PresentTap[TapWinding] > MinTap[TapWinding]  THEN
+                             WITH ActiveCircuit Do Begin
+                                   ControlActionHandle := ControlQueue.Push(Solution.DynaVars.intHour, Solution.DynaVars.t + ComputeTimeDelay(Vactual), ACTION_TAPCHANGE, 0, Self);
+                                   Armed := TRUE;  // Armed to change taps
+                             End;
                        End;
                End;
            END {If TapChangeIsNeeded}
-         ELSE PendingTapChange := 0.0;
+         ELSE
+         Begin {Reset if back in band.}
+              PendingTapChange := 0.0;
+              if Armed Then
+              Begin
+                   ActiveCircuit.ControlQueue.Delete(ControlActionHandle);
+                   Armed := FALSE;
+                   ControlActionHandle := 0;
+              End;
+         End;
 
        END;
+
 end;
 
 FUNCTION TRegControlObj.Get_Transformer: TTransfObj;
@@ -1148,7 +1217,7 @@ End;
 Procedure TRegControlObj.Reset;
 begin
       PendingTapChange := 0.0;
-
+      ARMED  := FALSE;
 end;
 
 procedure TRegcontrolObj.SaveWrite(var F: TextFile);
@@ -1156,7 +1225,6 @@ procedure TRegcontrolObj.SaveWrite(var F: TextFile);
 {Regcontrol structure not conducive to standard means of saving}
 var
    iprop :Integer;
-   i     :Integer;
 begin
    {Write only properties that were explicitly set in the
    final order they were actually set}

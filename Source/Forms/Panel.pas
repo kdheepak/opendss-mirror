@@ -10,7 +10,12 @@ interface
 
 uses
   Windows, Messages, SysUtils, Classes, Graphics, Controls, Forms, Dialogs,
-  StdCtrls, ComCtrls, Menus, ToolWin, ImgList,Scriptform, jpeg, ExtCtrls, PsAPI;
+  StdCtrls, ComCtrls, Menus, ToolWin, ImgList,ScriptEdit, ExtCtrls, PsAPI
+{$IFDEF VER300} // Seattle
+  ,System.ImageList;
+{$ELSE}
+  ;
+{$ENDIF}
 
 type
   TControlPanel = class(TForm)
@@ -75,10 +80,6 @@ type
     KeepList1: TMenuItem;
     LoadMultiplier1: TMenuItem;
     AllocationFactors1: TMenuItem;
-    Window1: TMenuItem;
-    Tile1: TMenuItem;
-    Cascade1: TMenuItem;
-    ArrangeIcons1: TMenuItem;
     ToolButton6: TToolButton;
     ToolButton7: TToolButton;
     ToolButton8: TToolButton;
@@ -152,7 +153,6 @@ type
     Loadshape1: TMenuItem;
     TCCCurve1: TMenuItem;
     Losses1: TMenuItem;
-    Summary1: TMenuItem;
     ToolButton17: TToolButton;
     ToolButton18: TToolButton;
     List1: TMenuItem;
@@ -174,7 +174,7 @@ type
     CompileCombo: TComboBox;
     CompileBtn: TToolButton;
     ToolButton22: TToolButton;
-    PopupMenu1: TPopupMenu;
+    PopupMenuCombo: TPopupMenu;
     Popup1Compile: TMenuItem;
     Popup1Edit: TMenuItem;
     PopUp1Delete: TMenuItem;
@@ -217,13 +217,11 @@ type
     Buscoords1: TMenuItem;
     Sort1: TMenuItem;
     Losses2: TMenuItem;
-    ResultForm1: TMenuItem;
     Mismatch1: TMenuItem;
     kVBaseMismatch1: TMenuItem;
     Summary2: TMenuItem;
     OpenDSSWiki1: TMenuItem;
     NodeNames1: TMenuItem;
-    Image2: TImage;
     Taps1: TMenuItem;
     NodeOrder1: TMenuItem;
     Result1: TMenuItem;
@@ -249,6 +247,33 @@ type
     PVSystems1: TMenuItem;
     Storage1: TMenuItem;
     P1: TMenuItem;
+    Panel1: TPanel;
+    Panel2: TPanel;
+    Splitter23: TSplitter;
+    Panel3: TPanel;
+    Panel4: TPanel;
+    Splitter45: TSplitter;
+    Panel5: TPanel;
+    ResultPages: TPageControl;
+    EditPages: TPageControl;
+    SummaryTab: TTabSheet;
+    ResultsTab: TTabSheet;
+    SummaryEdit: TRichEdit;
+    ResultsEdit: TRichEdit;
+    MessageEdit: TRichEdit;
+    Label1: TLabel;
+    PopupMenuScript: TPopupMenu;
+    ScriptDoMnu: TMenuItem;
+    ScriptSaveMnu: TMenuItem;
+    ScriptCloseMnu: TMenuItem;
+    ScriptDirMnu: TMenuItem;
+    ScriptOpenMnu: TMenuItem;
+    ScriptEditMnu: TMenuItem;
+    FontDialog1: TFontDialog;
+    N14: TMenuItem;
+    ScriptFontMnu: TMenuItem;
+    Summary1: TMenuItem;
+    LinkstoHelpFiles1: TMenuItem;
     procedure FormClose(Sender: TObject; var Action: TCloseAction);
     procedure DSSHelp1Click(Sender: TObject);
     procedure AboutDSS1Click(Sender: TObject);
@@ -276,9 +301,6 @@ type
     procedure ResultFile1Click(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure NewScriptWindow1Click(Sender: TObject);
-    procedure Tile1Click(Sender: TObject);
-    procedure Cascade1Click(Sender: TObject);
-    procedure ArrangeIcons1Click(Sender: TObject);
     procedure RecordScript1Click(Sender: TObject);
     procedure Zone1Click(Sender: TObject);
     procedure ClassBoxChange(Sender: TObject);
@@ -392,7 +414,6 @@ type
     procedure Buscoords1Click(Sender: TObject);
     procedure Sort1Click(Sender: TObject);
     procedure Losses2Click(Sender: TObject);
-    procedure ResultForm1Click(Sender: TObject);
     procedure Mismatch1Click(Sender: TObject);
     procedure kVBaseMismatch1Click(Sender: TObject);
     procedure Summary2Click(Sender: TObject);
@@ -425,11 +446,22 @@ type
     procedure PVSystems1Click(Sender: TObject);
     procedure Storage1Click(Sender: TObject);
     procedure P1Click(Sender: TObject);
+    procedure ScriptFontClick(Sender: TObject);
+    procedure ApplyFont(Sender: TObject; Wnd: HWND);
+    procedure ScriptDoClick(Sender: TObject);
+    procedure ScriptSaveClick(Sender: TObject);
+    procedure ScriptCloseClick(Sender: TObject);
+    procedure ScriptDirClick(Sender: TObject);
+    procedure ScriptOpenClick(Sender: TObject);
+    procedure ScriptEditClick(Sender: TObject);
+    procedure EditPagesChange(Sender: TObject);
+    procedure LinkstoHelpFiles1Click(Sender: TObject);
   private
     { Private declarations }
     PlotOptionString:String;
-    Function MakeANewEditForm(const Cap:String):TMainEditForm;
-    
+    Function MakeANewEditForm(const Cap:String):TScriptEdit;
+    procedure UpdateCaptions;
+
   public
     { Public declarations }
 
@@ -437,7 +469,7 @@ type
     Procedure InitializeForm;
     Procedure AddCompiledFile(const filename:String);
     Procedure UpdateStatus;
-    Procedure UpdateClassBox;
+    Procedure UpdateClassBox; // also UpdateCaptions
     Procedure UpdateElementBox;
     Procedure MakeBaseClassBox;
     Procedure PopulateClassList(BaseClass: WORD);
@@ -448,52 +480,48 @@ type
 implementation
 
 uses Executive, DSSClassDefs, DSSGlobals,
-  ClipBrd,  Utilities, contnrs, MessageForm,
+  ClipBrd,  Utilities, contnrs,
   DlgPlotOptions,  DSSPlot, FrmCSVchannelSelect,
   DlgComboBox,dlgNumber, ExecOptions, ExecCommands, ExecHelper, Dynamics, DSSClass, ListForm,
   Lineunits, Monitor, FrmDoDSSCommand, Frm_RPNcalc, DSSForms, showOptions, ShellAPI,
-  IniRegSave, System.UITypes;
+  IniRegSave, System.UITypes, System.Types;
 
 {$R *.DFM}
 
 Var
-   SelectedMonitor :String;
+  SelectedMonitor :String;
 
 Function WinStateToInt(WindowState:TWindowState):Integer;
 Begin
-    Case WindowState of
-        wsNormal: Result := 0;
-        wsMinimized: Result := 1;
-        wsMaximized: Result := 2;
-    Else
-        Result := 0;
-    End;
+  Case WindowState of
+    wsNormal: Result := 0;
+    wsMinimized: Result := 1;
+    wsMaximized: Result := 2;
+  Else
+    Result := 0;
+  End;
 End;
 
 Function IntToWinstate(Value:Integer):TWindowState;
 Begin
-    Case Value of
-       0: Result := wsNormal;
-       1: Result := wsMinimized;
-       2: Result := wsMaximized;
-    Else
-       Result := wsNormal;
-    End;
+  Case Value of
+    0: Result := wsNormal;
+    1: Result := wsMinimized;
+    2: Result := wsMaximized;
+  Else
+    Result := wsNormal;
+  End;
 End;
 
-
-
-Procedure DoSavePrompt(ActiveScriptForm:TMainEditForm);
-
+Procedure DoSavePrompt(ActiveScriptForm:TScriptEdit);
 Begin
-     Case MessageDlg('File '+ActiveScriptForm.Caption+' has changed.  Save ?', mtConfirmation, [mbYes, mbNo], 0) of
-       mrYes: ActiveScriptForm.SaveEditorContents;
-     Else
-
-     End;
+  Case MessageDlg('File '+ActiveScriptForm.Caption+' has changed.  Save ?', mtConfirmation, [mbYes, mbNo], 0) of
+    mrYes: ActiveScriptForm.SaveEditorContents;
+  Else
+  End;
 End;
 
-Function  WritePanelRecord(idx:Integer; ActiveScriptForm:TMainEditForm):Boolean;
+Function  WritePanelRecord(idx:Integer; ActiveScriptForm:TScriptEdit):Boolean;
 Begin
   Result := FALSE;
   If ActiveScriptForm.HasFileName Then Begin
@@ -507,16 +535,14 @@ Begin
     If test then result := -1 else result := 0;
 End;
 
-Procedure WriteWindowRecord(idx:Integer; ActiveScriptForm:TMainEditForm);
+Procedure WriteWindowRecord(idx:Integer; ActiveScriptForm:TScriptEdit);
 Var
   i, imax:Integer;
   IsFileWindow:Boolean;
 Begin
   IsFileWindow := WritePanelRecord(idx, ActiveScriptForm);
   With ActiveScriptForm Do Begin
-    DSS_Registry.WriteString(Format('Window%d', [idx]),
-      Format(' %d, %d, %d, %d, %d, %d',
-      [Top, Left, Height, Width, WinStateToInt(WindowState), BoolToInt(Active)]));
+    DSS_Registry.WriteString(Format('Window%d', [idx]), Format(' %d', [idx]));
     If Not IsFileWindow Then Begin   // just a general unsaved script window
       imax := Editor.Lines.Count - 1;
       DSS_Registry.WriteInteger(Format('LineCount%d', [idx]), Editor.Lines.Count);
@@ -535,26 +561,18 @@ Var
   j :Integer;
 begin
   // Main control panel
+  //   script windows numbered 1..ScriptCount
+  //   the main script window is #1 in the list
   DSS_Registry.Section := 'Panels';
   DSS_Registry.ClearSection;
   DSS_Registry.WriteString('MainWindow', Format(' %d, %d, %d, %d, %d',
     [Top, Left, Height, Width, WinStateToInt(WindowState)]));
   DSS_Registry.WriteInteger('ScriptCount', ScriptWindowList.Count);
 
-  ActiveScriptForm := MainEditForm;
-  WriteWindowRecord(0, ActiveScriptForm);
-
-  For j := 1 to ScriptWindowList.Count Do  Begin
-    ActiveScriptForm := TMainEditForm(ScriptWindowList.Items[j-1]);
+  For j := 1 to ScriptWindowList.Count Do Begin
+    ActiveScriptForm := TScriptEdit(ScriptWindowList.Items[j-1]);
     WriteWindowRecord(j, ActiveScriptForm);
   End;
-
-    {Save Summary Form and Result form location & Size}
- //     Writeln(F,'[Summary]');
- //     With SummaryForm Do Writeln(F,'{Window}', Format(' %d, %d, %d, %d, %d',[Top, Left, Height, Width, WinStateToInt(WindowState)]));
- //     Writeln(F,'[Result]');
- //      With ResultForm Do Writeln(F,'{Window}', Format(' %d, %d, %d, %d, %d',[Top, Left, Height, Width, WinStateToInt(WindowState)]));
-
 
   {Write compile file combo}
   DSS_Registry.Section := 'Compiled';
@@ -629,12 +647,12 @@ end;
 
 procedure TControlPanel.Exit1Click(Sender: TObject);
 begin
-     Close;
+  Close;
 end;
 
 procedure TControlPanel.VoltagesLN1Click(Sender: TObject);
 begin
-   ActiveScriptForm.ExecuteDSSCommand('Show Voltage');
+  ActiveScriptForm.ExecuteDSSCommand('Show Voltage');
 end;
 
 procedure TControlPanel.VoltagesLL1Click(Sender: TObject);
@@ -644,22 +662,22 @@ end;
 
 procedure TControlPanel.CurrArray1Click(Sender: TObject);
 begin
-ActiveScriptForm.ExecuteDSSCommand('Export YCurrents');
+  ActiveScriptForm.ExecuteDSSCommand('Export YCurrents');
 end;
 
 procedure TControlPanel.Currents1Click(Sender: TObject);
 begin
-     ActiveScriptForm.ExecuteDSSCommand('Show current');
+  ActiveScriptForm.ExecuteDSSCommand('Show current');
 end;
 
 procedure TControlPanel.PowerskVA1Click(Sender: TObject);
 begin
-     ActiveScriptForm.ExecuteDSSCommand('Show Power');
+  ActiveScriptForm.ExecuteDSSCommand('Show Power');
 end;
 
 procedure TControlPanel.PowersMVA1Click(Sender: TObject);
 begin
-     ActiveScriptForm.ExecuteDSSCommand('Show Power MVA');
+  ActiveScriptForm.ExecuteDSSCommand('Show Power MVA');
 end;
 
 procedure TControlPanel.Meters1Click(Sender: TObject);
@@ -692,17 +710,39 @@ procedure TControlPanel.ToolButton3Click(Sender: TObject);
 begin
   Screen.Cursor := crHourglass;
   ActiveScriptForm.ExecuteDSSCommand('solve');
-  if Not ActiveCircuit.IsSolved then SummaryForm.Show;
+  if Not ActiveCircuit.IsSolved then ResultPages.ActivePage:=SummaryTab;
   Screen.Cursor := crDefault;
 end;
-
-
 
 procedure TControlPanel.ToolButton2Click(Sender: TObject);
 begin
   Screen.Cursor := crHourglass;
   With ActiveScriptForm Do if BuildCommandList then ExecuteCommandList;
   Screen.Cursor := crDefault;
+end;
+
+procedure TControlPanel.ScriptDirClick(Sender: TObject);
+begin
+  ActiveScriptForm.ChangeToThisDir;
+end;
+
+procedure TControlPanel.ScriptCloseClick(Sender: TObject);
+begin
+  if ActiveScriptForm.CheckEditorClose = true then begin
+    EditPages.Pages[EditPages.ActivePageIndex].Free;
+    ScriptWindowList.Remove(ActiveScriptForm);
+    ActiveScriptForm := TScriptEdit(EditPages.ActivePage.Tag);
+  end;
+end;
+
+procedure TControlPanel.ScriptDoClick(Sender: TObject);
+begin
+  ActiveScriptForm.DoSelection;
+end;
+
+procedure TControlPanel.ScriptEditClick(Sender: TObject);
+begin
+  ActiveScriptForm.EditSelectedFile;
 end;
 
 procedure TControlPanel.ScriptEditorHelp1Click(Sender: TObject);
@@ -732,20 +772,68 @@ begin
   Editor.Lines.Add ('  Lines partially selected are sent as whole lines.');
   Editor.Lines.Add ('');
   Editor.Lines.Add ('**** End Block Comment ****/');
-
  End;
+end;
+
+procedure TControlPanel.ApplyFont(Sender: TObject; Wnd: HWND);
+begin
+  ActiveScriptForm.Editor.SelAttributes.Assign(TFontDialog(Sender).Font)
+end;
+
+procedure TControlPanel.ScriptFontClick(Sender: TObject);
+var
+  FontSave :TFont;
+begin
+  With ActiveScriptForm Do Begin
+    Editor.SelStart := 0;
+    Editor.SelLength := Editor.GetTextLen;
+    With FontDialog1 do  Begin
+      FontSave := Editor.Font;
+      Font := Editor.Font;
+      Options := Options + [fdApplyButton];
+      If Execute then Begin
+        Editor.SelAttributes.Assign(Font);
+        Editor.Font := Font;
+        DefaultFontSize   := Editor.Font.Size;
+        DefaultFontName   := Editor.Font.Name;
+        DefaultFontStyles := Editor.Font.Style;
+      End Else
+        Editor.Font := FontSave;
+    End;
+  End;
+end;
+
+procedure TControlPanel.ScriptOpenClick(Sender: TObject);
+Var
+  FileName:String;
+begin
+  FileName := ActiveScriptForm.GetSelectedFileName;
+  if Length(FileName) > 0 then begin
+    Try
+      ActiveScriptForm := MakeANewEditForm(FileName);
+      ActiveScriptForm.Editor.Lines.LoadFromFile(FileName);
+      ActiveScriptForm.Caption := ExpandFileName(FileName);
+      ActiveScriptForm.HasBeenModified := FALSE;
+      ActiveScriptForm.HasFileName := TRUE;
+    Except
+      On E:Exception Do DoSimpleMsg('Error opening new window: '+ E.Message, 312);
+    End;
+  end;
+  UpdateCaptions;
+end;
+
+procedure TControlPanel.ScriptSaveClick(Sender: TObject);
+begin
+  ActiveScriptForm.SaveSelection;
 end;
 
 procedure TControlPanel.LastFile1Click(Sender: TObject);
 begin
-
   FireOffEditor(LastFileCompiled);
-
 end;
 
 procedure TControlPanel.File2Click(Sender: TObject);
 begin
-
   With OpenDialog1 Do Begin
     FileName := '';
     DefaultExt := 'dss';
@@ -753,7 +841,6 @@ begin
     Title := 'Select File to Edit';
     If Execute Then FireOffEditor(FileName);
   End;
-
 end;
 
 procedure TControlPanel.Interpolate1Click(Sender: TObject);
@@ -768,56 +855,50 @@ end;
 
 procedure TControlPanel.ResultFile1Click(Sender: TObject);
 begin
-    ActiveScriptForm.ExecuteDSSCommand('fileedit ['+ ResultForm.Editor.Lines.Strings[0]+']');
+ //   ActiveScriptForm.ExecuteDSSCommand('fileedit ['+ ResultsEdit.Lines.Strings[0]+']');
+    ActiveScriptForm.ExecuteDSSCommand('fileedit ['+ Edit_Result.Text+']');
 end;
 
-
-procedure TControlPanel.ResultForm1Click(Sender: TObject);
+function TControlPanel.MakeANewEditForm(const Cap: String): TScriptEdit;
+var
+  ts: TTabSheet;
+  re: TRichEdit;
+  id: Integer;
 begin
-     ResultForm.Show;
-end;
-
-function TControlPanel.MakeANewEditForm(const Cap: String): TMainEditForm;
-begin
-     Result := TMainEditForm.Create(Nil);
-     Result.Caption := Cap;
-     ScriptWindowList.Add(Result);
+  ts := TTabSheet.Create(EditPages);
+  ts.PageControl := EditPages;
+  id := EditPages.PageCount;
+  if id > 1 then
+    ts.Caption := 'Script'+IntToStr(id)
+  else
+    ts.Caption := 'Main';
+  re := TRichEdit.Create(ts);
+  re.Parent := ts;
+  re.Align := alClient;
+  re.ScrollBars := ssBoth;
+  re.Font.Size  := DefaultFontSize;
+  re.Font.Name  := DefaultFontName;
+  re.Font.Style := DefaultFontStyles;
+  Result := TScriptEdit.Create;
+  Result.Editor := re;
+  Result.Tab := ts;
+  re.OnChange := Result.EditorChange;
+  re.OnSelectionChange := Result.EditorSelectionChange;
+  Result.Caption := Cap;
+  ScriptWindowList.Add(Result);
+  EditPages.ActivePage := ts;
+  ts.Tag := NativeInt(Result);
 end;
 
 procedure TControlPanel.FormDestroy(Sender: TObject);
 Var i:Integer;
 begin
-  If Assigned(ResultForm) Then Resultform.Free;
-  If Assigned(SummaryForm) Then SummaryForm.Free;
-
    {Free All the forms not created by the main program}
    For i := 1 to ScriptWindowList.Count Do
    Begin
-       TMainEditForm(ScriptWindowList.Items[i-1]).Free;
+       TScriptEdit(ScriptWindowList.Items[i-1]).Free;
    End;
-
-   If IsDLL and Assigned(MainEditForm) Then MainEditForm.Free;
-   If IsDLL and Assigned(MessageForm1) Then MessageForm1.Free;
 end;
-
-Procedure ProcessWindowState(ActiveForm:TForm; Const TextLine:String;var FormOnTop:TForm);
-// Set the size and position of the present window
-// no more leading tokens when using the registry
-Begin
-  Auxparser.CmdString := TextLine;
-  AuxParser.NextParam;
-  ActiveForm.Top := AuxParser.IntValue;
-  AuxParser.NextParam;
-  ActiveForm.Left  := AuxParser.IntValue;
-  AuxParser.NextParam;
-  ActiveForm.Height  := AuxParser.IntValue;
-  AuxParser.NextParam;
-  ActiveForm.Width := AuxParser.IntValue;
-  AuxParser.NextParam;
-  ActiveForm.WindowState := IntToWinState(AuxParser.IntValue);
-  AuxParser.NextParam;
-  If AuxParser.IntValue<>0 Then FormOnTop := ActiveForm;
-End;
 
 procedure TControlPanel.InitializeForm;
 {Reinitialize contents of script forms box from last usage.}
@@ -827,38 +908,23 @@ Var
   TextLine :String;
   FileName :String;
 
-  ActiveForm,
-  FormOnTop: TForm;
-
   CmdLineFileFound,
   WindowExistsAlready :Boolean;
 
   i,j:Integer;
-  TestForm:TMainEditForm;
+  TestForm:TScriptEdit;
   nScripts, nLines, nCompiled: Integer;
 
 begin
-  If Not Assigned (MainEditForm) Then MainEditForm := TMainEditForm.Create(Nil);
-  MainEditForm.isMainWindow := TRUE;
-  If Not Assigned (MessageForm1) Then MessageForm1 := TMessageForm1.Create(Nil);
-
-  ResultForm := TMessageForm1.Create(Nil);
-  ResultForm.Caption := 'Result';
-  ResultForm.Height := ResultForm.Height div 4;
-  ResultForm.Editor.Clear;
-  ResultForm.Editor.WordWrap := False;
-
-  SummaryForm := TMessageForm1.Create(Nil);
-  SummaryForm.Caption := 'Summary';
-  SummaryForm.Height := SummaryForm.Height div 2;
-  SummaryForm.Width := SummaryForm.Width div 2;
-  SummaryForm.Editor.Clear;
-
-  ActiveScriptForm := MainEditForm;
-  FormOnTop := MainEditForm;
-  ScriptWindowList := TObjectList.Create;   // For keeping track of other windows than main
+  ScriptWindowList := TObjectList.Create;
   ScriptWindowList.Clear;
   ScriptWindowList.OwnsObjects := FALSE;
+
+  // make sure the MainEditForm is created, even if not in the registry
+  // below, we load MainEditForm from the registry script window #1
+  If Not Assigned (MainEditForm) Then MainEditForm := MakeANewEditForm('Main');
+  MainEditForm.isMainWindow := TRUE;
+  ActiveScriptForm := MainEditForm;
 
   PlotOptionString := ' max=2000 n n';
 
@@ -868,31 +934,29 @@ begin
   DSS_Registry.Section := 'Panels';
   TextLine := DSS_Registry.ReadString('MainWindow', '100, 100, 600, 800, 0');
   nScripts := DSS_Registry.ReadInteger('ScriptCount', 0);
-  ProcessWindowState (Self, TextLine, FormOnTop);
+//  ProcessWindowState (Self, TextLine);
   {Make sure the Main Form is on screen}
   If (Self.Left > Screen.Width) or (Self.Left < 0) then Self.Left := 0;
 
   // Now process script forms and other child forms
-  EditFormCount := 1; // main script window
-  for i := 0 to nScripts do begin
+  EditFormCount := 1; // main script window was created above
+  for i := 1 to nScripts do begin // the MainEditForm is #1
     nLines := DSS_Registry.ReadInteger(Format('LineCount%d',[i]), 0);
-    if i > 0 then begin // need to make a new edit form
+    if i > 1 then begin // need to make a new edit form
       Inc(EditFormCount);
-      if nLines < 1 then begin
+      if nLines < 1 then begin   // if no lines stored in Registry
         FileName := DSS_Registry.ReadString(Format('File%d',[i]), '');
         ActiveScriptForm := MakeANewEditForm(FileName);
       end else begin
-        ActiveScriptForm := MakeANewEditForm('Script window '+InttoStr(EditFormCount))
+        ActiveScriptForm := MakeANewEditForm('Script'+InttoStr(EditFormCount))
       end;
     end;
-    ActiveForm := ActiveScriptForm;
-    TextLine := DSS_Registry.ReadString(Format('Window%d',[i]), '0, 0, 443, 788, 0, -1');
-    ProcessWindowState(ActiveForm, TextLine, FormOnTop);
     ActiveScriptForm.Editor.Lines.BeginUpdate;
     if (nLines < 1) and FileExists(FileName) then begin // try loading a file
       Try
         ActiveScriptForm.Editor.Lines.LoadFromFile (FileName);
         ActiveScriptForm.HasFileName := TRUE;
+        UpdateCaptions;
       Except  // ignore error -- likely file got moved
       End;
     end else begin // read collection of saved lines into the script window
@@ -904,6 +968,7 @@ begin
     ActiveScriptForm.HasBeenModified := FALSE; // should not be yellow after restoration
     ActiveScriptForm.Editor.Lines.EndUpdate;
   end;
+
 
   // compiled combo box section
   DSS_Registry.Section := 'Compiled';
@@ -920,7 +985,7 @@ begin
   If Length(LastFileCompiled)>0 Then AddCompiledFile(LastFileCompiled); // Make this first or selected
   ActiveScriptForm.Editor.Lines.EndUpdate;
 
-  ActiveScriptForm := FormOnTop as TMainEditForm;
+//  ActiveScriptForm := FormOnTop as TScriptEdit;
 
   // Check for a file (ONE ONLY) name on the cmdline.
   // If a file is found, make a new script window, make active, select all and execute
@@ -934,7 +999,7 @@ begin
         If FileExists(CmdLineFileName) Then Begin
        // Check if it already exists
           For j := 0 to ScriptWindowList.Count-1 Do Begin
-            TestForm := TMainEditForm(ScriptWindowList.Items[j]);
+            TestForm := TScriptEdit(ScriptWindowList.Items[j]);
             If CompareText(TestForm.Caption, CmdLineFileName)=0 Then Begin
               ActiveScriptForm := TestForm;
               WindowExistsAlready := TRUE;
@@ -956,7 +1021,6 @@ begin
 
   MainEditForm.HasBeenModified := FALSE; // so it doesn't show yellow
   ActiveScriptForm.UpdateSummaryForm;
-  ActiveScriptForm.show;
 
 // If a command line file name give, attempt to execute the script
   If CmdLineFileFound Then Begin
@@ -964,32 +1028,21 @@ begin
     ToolButton2Click(nil);   // Execute all the commands in the window
   End;
 
+
   {Tile;}
   UpdateStatus;
   Recordcommands := False;
   MakeBaseClassBox;
   UpdateClassBox;
+  Edit_Result.Text := VersionString;
+
 end;
 
 procedure TControlPanel.NewScriptWindow1Click(Sender: TObject);
 begin
-      Inc(EditFormCount);
-      ActiveScriptForm := MakeANewEditForm('Script Window '+InttoStr(EditFormCount));
-end;
-
-procedure TControlPanel.Tile1Click(Sender: TObject);
-begin
-     Tile;
-end;
-
-procedure TControlPanel.Cascade1Click(Sender: TObject);
-begin
-     Cascade;
-end;
-
-procedure TControlPanel.ArrangeIcons1Click(Sender: TObject);
-begin
-     Arrangeicons;
+  Inc(EditFormCount);
+  ActiveScriptForm := MakeANewEditForm('Script Window '+InttoStr(EditFormCount));
+  UpdateCaptions;
 end;
 
 procedure TControlPanel.UpdateStatus;
@@ -997,44 +1050,44 @@ var
   pmc: PPROCESS_MEMORY_COUNTERS;
   cb: Integer;
 begin
-     cb := sizeof(_PROCESS_MEMORY_COUNTERS);
-     GetMem(pmc, cb);
-     pmc^.cb := cb;
-     IF GetProcessMemoryInfo(GetCurrentProcess(), pmc, cb)
-     then
-        StatusBar1.Panels[0].Text := Format('Memory: %dK',[pmc^.WorkingSetSize div 1024])
-     else
-        StatusBar1.Panels[0].Text := 'Memory: ?';
-     FreeMem(pmc);
+  cb := sizeof(_PROCESS_MEMORY_COUNTERS);
+  GetMem(pmc, cb);
+  pmc^.cb := cb;
+  IF GetProcessMemoryInfo(GetCurrentProcess(), pmc, cb) then
+    StatusBar1.Panels[0].Text := Format('Memory: %dK',[pmc^.WorkingSetSize div 1024])
+  else
+    StatusBar1.Panels[0].Text := 'Memory: ?';
+  FreeMem(pmc);
 //     StatusBar1.Panels[1].Text := Format('Blocks: %d',[AllocMemCount]);
-     If ActiveCircuit <> Nil Then  Begin
-         With ActiveCircuit Do Begin
-          If IsSolved Then  StatusBar1.Panels[1].Text := 'Circuit Status: SOLVED'
-                      else  StatusBar1.Panels[1].Text := 'Circuit Status: NOT SOLVED';
-          StatusBar1.Panels[2].Text := Format('Total Iterations = %d, Control Iterations = %d,  Max Solution Iterations = %d',[solution.iteration, Solution.ControlIteration, Solution.MostIterationsDone  ]);
-         End;
-     End Else Begin
-         StatusBar1.Panels[1].Text := 'No Active Circuit';
-         StatusBar1.Panels[2].Text := ' ';
-     End;
+  If ActiveCircuit <> Nil Then  Begin
+    With ActiveCircuit Do Begin
+      If IsSolved Then
+        StatusBar1.Panels[1].Text := 'Circuit Status: SOLVED'
+      else  StatusBar1.Panels[1].Text := 'Circuit Status: NOT SOLVED';
+      StatusBar1.Panels[2].Text := Format('Total Iterations = %d, Control Iterations = %d,  Max Solution Iterations = %d',[solution.iteration, Solution.ControlIteration, Solution.MostIterationsDone  ]);
+    End;
+  End Else Begin
+    StatusBar1.Panels[1].Text := 'No Active Circuit';
+    StatusBar1.Panels[2].Text := ' ';
+  End;
 
-     DemandInterval1.Checked   := EnergyMeterclass.SaveDemandInterval ;
-     Caption := ProgramName + ' Data Directory: ' + DataDirectory; // NOTE: not necessarily same as output directory
-     If ActiveCircuit <> Nil then
-     With ActiveCircuit Do
-     Begin
-       ZonesLocked1.Checked       := ZonesLocked;
-       DuplicatesAllowed1.checked := DuplicatesAllowed;
-       TraceLog1.Checked          := ControlQueue.TraceLog;
-       Trapezoidal1.checked       := TrapezoidalIntegration;
-     End;
-     LBL_DefaultFreq.Caption := Format(' Base Frequency = %d Hz', [Round(DefaultBaseFreq) ]);
+  DemandInterval1.Checked   := EnergyMeterclass.SaveDemandInterval ;
+  Caption := ProgramName + ' Data Directory: ' + DataDirectory; // NOTE: not necessarily same as output directory
+  If ActiveCircuit <> Nil then
+    With ActiveCircuit Do Begin
+      ZonesLocked1.Checked       := ZonesLocked;
+      DuplicatesAllowed1.checked := DuplicatesAllowed;
+      TraceLog1.Checked          := ControlQueue.TraceLog;
+      Trapezoidal1.checked       := TrapezoidalIntegration;
+    End;
+  LBL_DefaultFreq.Caption := Format(' Base Frequency = %d Hz', [Round(DefaultBaseFreq) ]);
+  UpdateCaptions;
 end;
 
 procedure TControlPanel.RecordScript1Click(Sender: TObject);
 begin
-        RecordScript1.Checked := NOT  RecordScript1.Checked;
-        RecordCommands        := RecordScript1.Checked;
+  RecordScript1.Checked := NOT  RecordScript1.Checked;
+  RecordCommands        := RecordScript1.Checked;
 end;
 
 procedure TControlPanel.Zone1Click(Sender: TObject);
@@ -1146,24 +1199,22 @@ end;
 
 procedure TControlPanel.All1Click(Sender: TObject);
 begin
-    ActiveScriptForm.ExecuteDSSCommand('Reset');
+  ActiveScriptForm.ExecuteDSSCommand('Reset');
 end;
 
 procedure TControlPanel.Monitors1Click(Sender: TObject);
 begin
-    ActiveScriptForm.ExecuteDSSCommand('Reset Monitors');
+  ActiveScriptForm.ExecuteDSSCommand('Reset Monitors');
 end;
 
 procedure TControlPanel.EnergyMeters1Click(Sender: TObject);
 begin
-ActiveScriptForm.ExecuteDSSCommand('Reset meters');
+  ActiveScriptForm.ExecuteDSSCommand('Reset meters');
 end;
-
-
 
 procedure TControlPanel.EnergyMeters2Click(Sender: TObject);
 begin
-    ActiveScriptForm.ExecuteDSSCommand('Export meters');
+  ActiveScriptForm.ExecuteDSSCommand('Export meters');
 end;
 
 procedure TControlPanel.erminal1Click(Sender: TObject);
@@ -1178,22 +1229,22 @@ end;
 
 procedure TControlPanel.Controls1Click(Sender: TObject);
 begin
-        ActiveScriptForm.ExecuteDSSCommand('Reset controls');
+  ActiveScriptForm.ExecuteDSSCommand('Reset controls');
 end;
 
 procedure TControlPanel.EventLog2Click(Sender: TObject);
 begin
-        ActiveScriptForm.ExecuteDSSCommand('Reset eventlog');
+  ActiveScriptForm.ExecuteDSSCommand('Reset eventlog');
 end;
 
 procedure TControlPanel.KeepList1Click(Sender: TObject);
 begin
-        ActiveScriptForm.ExecuteDSSCommand('Reset keeplist');
+  ActiveScriptForm.ExecuteDSSCommand('Reset keeplist');
 end;
 
 procedure TControlPanel.kVBaseMismatch1Click(Sender: TObject);
 begin
-     ActiveScriptForm.ExecuteDSSCommand('show kvbasemismatch');
+  ActiveScriptForm.ExecuteDSSCommand('show kvbasemismatch');
 end;
 
 procedure TControlPanel.Monitor1Click(Sender: TObject);
@@ -1594,6 +1645,26 @@ begin
       End;
 end;
 
+procedure TControlPanel.UpdateCaptions;
+begin
+  MessageEdit.Clear;
+  if ActiveScriptForm.HasFileName then begin
+    // Caption := ProgramName + ' - ' + ActiveScriptForm.Caption;
+    MessageEdit.Lines.Add(ProgramName + ' - ' + ActiveScriptForm.Caption);
+    ActiveScriptForm.Tab.Caption := ExtractFileName(ActiveScriptForm.Caption);
+  end else begin
+    MessageEdit.Lines.Add(ActiveScriptForm.Caption);
+  end;
+  {Refresh Form Caption}
+  Caption := ProgramName + ' Data Directory: ' + DataDirectory;
+end;
+
+procedure TControlPanel.EditPagesChange(Sender: TObject);
+begin
+  ActiveScriptForm := TScriptEdit(EditPages.ActivePage.Tag);
+  UpdateCaptions;
+end;
+
 procedure TControlPanel.Datapath1Click(Sender: TObject);
 begin
      With OpenDialog1 Do
@@ -1860,8 +1931,6 @@ begin
                ExecuteDSSCommand(DoDSSCommandForm.sCommand);
            End;
        End;
-
-
 end;
 
 procedure TControlPanel.DemandInterval1Click(Sender: TObject);
@@ -2073,7 +2142,7 @@ procedure TControlPanel.Summary1Click(Sender: TObject);
 begin
    If ActiveCircuit <> Nil Then
       ActiveScriptForm.UpdateSummaryForm;
-   SummaryForm.show ;
+   ResultPages.ActivePage := SummaryTab;
 end;
 
 procedure TControlPanel.Summary2Click(Sender: TObject);
@@ -2124,9 +2193,11 @@ begin
        Monitors2Click(Sender); // Export monitor  to CSV file
 
        {Open Result File and Parse first line}
-       if FileExists(ResultForm.Editor.Lines.Strings[0]) then  Begin
+//       if FileExists(ResultsEdit.Lines.Strings[0]) then  Begin
+       if FileExists(Edit_Result.text) then  Begin
 
-         if MakeChannelSelection(2, ResultForm.Editor.Lines.Strings[0]) Then
+//         if MakeChannelSelection(2, ResultsEdit.Lines.Strings[0]) Then
+         if MakeChannelSelection(2, Edit_Result.text) Then
          Begin
            Screen.Cursor := crHourglass;
            ActiveScriptForm.ExecuteDSSCommand('Plot monitor object= '+SelectedMonitor+' channels=(' + ChannelSelectForm.ResultString  +')');
@@ -2181,40 +2252,39 @@ end;
 
 procedure TControlPanel.CurrentsElem1Click(Sender: TObject);
 begin
-     ActiveScriptForm.ExecuteDSSCommand('Show Currents Elements');
+  ActiveScriptForm.ExecuteDSSCommand('Show Currents Elements');
 end;
 
 procedure TControlPanel.Open1Click(Sender: TObject);
-Var CurrDir :String;
-
+Var
+  CurrDir :String;
 begin
-    With OpenDialog1 Do Begin
-        Filename := '';
-        DefaultExt := 'dss';
-        Filter := 'DSS files (*.dss)|*.dss|Text files (*.txt)|*.TXT|All files (*.*)|*.*';
-        Title := 'Open DSS Script File';
-        If Execute Then Begin
-           Try
-               ActiveScriptForm := MakeANewEditForm(FileName);
-               ActiveScriptForm.Editor.Lines.LoadFromFile (FileName);
-               ActiveScriptForm.HasBeenModified := FALSE;
-               ActiveScriptForm.HasFileName := TRUE;
-               AddCompiledFile(FileName);  // Stick it in combobox
-               CurrDir := ExtractFileDir(FileName);
-               SetCurrentDir(CurrDir);
-               SetDataPath(CurrDir);  // change datadirectory
-               UpdateStatus;
-           Except
-               On E:Exception Do DoSimpleMsg('Error: ' + E.Message, 218);
-           End;
-        End; {Execute}
-   End;  {WITH}
-
+  With OpenDialog1 Do Begin
+    Filename := '';
+    DefaultExt := 'dss';
+    Filter := 'DSS files (*.dss)|*.dss|Text files (*.txt)|*.TXT|All files (*.*)|*.*';
+    Title := 'Open DSS Script File';
+    If Execute Then Begin
+      Try
+        ActiveScriptForm := MakeANewEditForm(FileName);
+        ActiveScriptForm.Editor.Lines.LoadFromFile (FileName);
+        ActiveScriptForm.HasBeenModified := FALSE;
+        ActiveScriptForm.HasFileName := TRUE;
+        AddCompiledFile(FileName);  // Stick it in combobox
+        CurrDir := ExtractFileDir(FileName);
+        SetCurrentDir(CurrDir);
+        SetDataPath(CurrDir);  // change datadirectory
+        UpdateStatus;
+      Except
+        On E:Exception Do DoSimpleMsg('Error: ' + E.Message, 218);
+      End;
+    End; {Execute}
+  End;  {WITH}
 end;
 
 procedure TControlPanel.OpenDSSWiki1Click(Sender: TObject);
 begin
-      shellexecute(handle,'open','http://smartgrid.epri.com/SimulationTool.aspx',nil,nil,1);
+  shellexecute(handle,'open','http://smartgrid.epri.com/SimulationTool.aspx',nil,nil,1);
 end;
 
 procedure TControlPanel.Save2Click(Sender: TObject);
@@ -2542,6 +2612,26 @@ end;
 
 
 
+procedure TControlPanel.LinkstoHelpFiles1Click(Sender: TObject);
+Var retval : Word;
+    FileNm : String;
+
+Begin
+  FileNm := StartupDirectory + '..\Doc\Help Links.htm';
+  TRY
+  If FileExists(FileNm) Then
+  Begin
+      retval := ShellExecute (0, Nil, PChar(encloseQuotes(FileNm)),Nil, Nil, SW_SHOW);
+      SetLastResultFile( FileNm);
+
+  End;
+  EXCEPT
+      On E: Exception DO
+        DoErrorMsg('Links to Help Files.', E.Message,
+                   'Browser not found of help files moved or not installed.', 23704);
+  END;
+End;
+
 procedure TControlPanel.SeqVoltages1Click(Sender: TObject);
 begin
      ActiveScriptForm.ExecuteDSSCommand('Export seqVoltages');
@@ -2643,30 +2733,28 @@ begin
 end;
 
 procedure TControlPanel.ToolButton21Click(Sender: TObject);
-Var CurrDir:String;
-
+Var
+  CurrDir:String;
 {Open File Listed in combobox a Window}
-
 begin
-    If CompileCombo.ItemIndex >=0 Then Begin
-
+  If CompileCombo.ItemIndex >=0 Then Begin
     If FileExists(CompileCombo.text) Then Begin
-    Try
-         ActiveScriptForm := MakeANewEditForm(CompileCombo.text);
-         ActiveScriptForm.Editor.Lines.LoadFromFile (CompileCombo.text);
-         ActiveScriptForm.HasBeenModified := FALSE;
-         ActiveScriptForm.HasFileName := TRUE;
-         CurrDir := ExtractFileDir(CompileCombo.text);
-         SetCurrentDir(CurrDir);
-         SetDataPath(CurrDir);  // change datadirectory
-         UpdateStatus;
-     Except
-         On E:Exception Do DoSimpleMsg('Error Loading File: ' + E.Message, 218);
-     End;
+      Try
+        ActiveScriptForm := MakeANewEditForm(CompileCombo.text);
+        ActiveScriptForm.Editor.Lines.LoadFromFile (CompileCombo.text);
+        ActiveScriptForm.HasBeenModified := FALSE;
+        ActiveScriptForm.HasFileName := TRUE;
+        CurrDir := ExtractFileDir(CompileCombo.text);
+        SetCurrentDir(CurrDir);
+        SetDataPath(CurrDir);  // change datadirectory
+        UpdateStatus;
+      Except
+        On E:Exception Do DoSimpleMsg('Error Loading File: ' + E.Message, 218);
+      End;
     End Else Begin
-         DoSimpleMsg('File "'+ CompileCombo.Text + '" Not Found.', 218);
+      DoSimpleMsg('File "'+ CompileCombo.Text + '" Not Found.', 218);
     End ; {File Exists}
-    End;
+  End;
 end;
 
 procedure TControlPanel.CurrentsElem2Click(Sender: TObject);

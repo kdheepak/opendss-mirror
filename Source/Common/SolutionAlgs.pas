@@ -42,8 +42,9 @@ interface
 
 implementation
 
-Uses ArrayDef, DSSGlobals, DSSForms,  Utilities, SysUtils, MathUtil, Math, Fault, uComplex, YMatrix,
-     PCElement, Spectrum, Vsource, Isource;
+Uses ArrayDef, DSSGlobals, {$IFDEF FPC} CmdForms,{$ELSE} DSSForms,{$ENDIF}  Utilities,
+     SysUtils, MathUtil, Math, Fault, uComplex, YMatrix,
+     PCElement, Spectrum, Vsource, Isource, KLUSolve;
 
 VAR ProgressCount:Integer;
 
@@ -51,15 +52,19 @@ VAR ProgressCount:Integer;
 //= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 PROCEDURE FinishTimeStep;
 {
-   Cample Cleanup and increment time
+   Sample Cleanup and increment time
 
    For custom solutions.
 
 }
 Begin
     MonitorClass.SampleAll;
-    EndOfTimeStepCleanup;
-    ActiveCircuit.Solution.Increment_time;
+    With ActiveCircuit.Solution Do Begin
+        If SampleTheMeters then EnergyMeterClass.SampleAll;   // Save Demand interval Files
+
+        EndOfTimeStepCleanup;
+        Increment_time;
+    End;
 End;
 
 
@@ -73,6 +78,10 @@ Begin
     StorageClass.UpdateAll;
     InvControlClass.UpdateAll;
     ExpControlClass.UpdateAll;
+
+    // End of Time Step Timer
+    ActiveCircuit.Solution.UpdateLoopTime;
+    MonitorClass.SampleAllMode5;  // sample all mode 5 monitors to get timings
 End;
 
 //= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
@@ -114,7 +123,7 @@ Begin
           IF PriceCurveObj <> NIL THEN PriceSignal := PriceCurveObj.GetPrice(dblHour);
           SolveSnap;
           MonitorClass.SampleAll;  // Make all monitors take a sample
-          EnergyMeterClass.SampleAll; // Make all Energy Meters take a sample
+          If SampleTheMeters then EnergyMeterClass.SampleAll; // Make all Energy Meters take a sample
 
           EndOfTimeStepCleanup;
 
@@ -161,7 +170,7 @@ Begin
             IF PriceCurveObj<> NIL THEN PriceSignal := PriceCurveObj.GetPrice(dblHour);
             SolveSnap;
             MonitorClass.SampleAll;  // Make all monitors take a sample
-            EnergyMeterClass.SampleAll; // Make all Energy Meters take a sample
+            If SampleTheMeters then EnergyMeterClass.SampleAll; // Make all Energy Meters take a sample
 
             EndOfTimeStepCleanup;
 
@@ -169,7 +178,7 @@ Begin
 
     Finally
       MonitorClass.SaveAll;
-      EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
+      If SampleTheMeters then EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
     End; {Try}
    End;  {WITH}
 End;
@@ -210,14 +219,14 @@ Begin
             IF PriceCurveObj<> NIL THEN PriceSignal := PriceCurveObj.GetPrice(dblHour);
             SolveSnap;
             MonitorClass.SampleAll;  // Make all monitors take a sample
-            EnergyMeterClass.SampleAll; // Make all Energy Meters take a sample
+            If SampleTheMeters then EnergyMeterClass.SampleAll; // Make all Energy Meters take a sample
 
             EndOfTimeStepCleanup;
 
         End;
       Finally
         MonitorClass.SaveAll;
-        EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
+        If SampleTheMeters then EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
       End;
      End;  {WITH}
 End;
@@ -250,6 +259,7 @@ Begin
             // Assume pricesignal stays constant for dutycycle calcs
             SolveSnap;
             MonitorClass.SampleAll;  // Make all monitors take a sample
+            If SampleTheMeters then EnergyMeterClass.SampleAll; // Make all Energy Meters take a sample
 
             EndOfTimeStepCleanup;
 
@@ -258,6 +268,7 @@ Begin
         End;
       Finally
         MonitorClass.SaveAll;
+        If SampleTheMeters then EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
         ProgressHide;
       End;
     End;
@@ -378,7 +389,7 @@ Begin
             Inc(DynaVars.intHour);
             SolveSnap;
             MonitorClass.SampleAll;  // Make all monitors take a sample
-            EnergyMeterClass.SampleAll;  // Make all meters take a sample
+            If SampleTheMeters then EnergyMeterClass.SampleAll;  // Make all meters take a sample
             Show10PctProgress(N, NumberOfTimes);
         End
         Else  Begin
@@ -389,6 +400,7 @@ Begin
         End;
      Finally
         MonitorClass.SaveAll;
+        If SampleTheMeters then EnergyMeterClass.CloseAllDIFiles ;
         ProgressHide;
      End;
    End;
@@ -439,7 +451,7 @@ Begin
             SolveSnap;
 
             MonitorClass.SampleAll;  // Make all monitors take a sample
-            EnergyMeterClass.SampleAll;  // Make all meters take a sample
+            If SampleTheMeters then EnergyMeterClass.SampleAll;;  // Make all meters take a sample
 
             EndOfTimeStepCleanup;
 
@@ -456,7 +468,7 @@ Begin
         End;
       Finally
         MonitorClass.SaveAll;
-        EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
+        If SampleTheMeters then EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
         ProgressHide;
       End;
     End;
@@ -504,7 +516,7 @@ Begin
             SolveSnap;
 
             MonitorClass.SampleAll;  // Make all monitors take a sample
-            EnergyMeterClass.SampleAll;  // Make all meters take a sample
+            If SampleTheMeters then EnergyMeterClass.SampleAll;  // Make all meters take a sample
 
             Show10PctProgress(N, NumberOfTimes);
         End
@@ -517,7 +529,7 @@ Begin
         End;
       Finally
         MonitorClass.SaveAll;
-        EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
+        If SampleTheMeters then EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
         ProgressHide;
       End;
     End; {WITH}
@@ -579,7 +591,7 @@ Begin
               SolveSnap;
 
               MonitorClass.SampleAll;     // Make all monitors take a sample
-              EnergyMeterClass.SampleAll;  // Make all meters take a sample
+              If SampleTheMeters then EnergyMeterClass.SampleAll;  // Make all meters take a sample
 
               EndOfTimeStepCleanup;
 
@@ -598,7 +610,7 @@ Begin
       End;
     Finally
       MonitorClass.SaveAll;
-      EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
+      If SampleTheMeters then EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
       ProgressHide;
     End;
  End; {WITH ActiveCircuit}
@@ -656,14 +668,14 @@ Begin
         SolveSnap;
 
         MonitorClass.SampleAll;  // Make all monitors take a sample
-        EnergyMeterClass.SampleAll;  // Make all meters take a sample
+        If SampleTheMeters then EnergyMeterClass.SampleAll;  // Make all meters take a sample
 
         EndOfTimeStepCleanup;
 
       End;
     Finally
       MonitorClass.SaveAll;
-      EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
+      If SampleTheMeters then EnergyMeterClass.CloseAllDIFiles;   // Save Demand interval Files
     End;
   End; {WITH ActiveCircuit}
 
@@ -913,7 +925,7 @@ Begin
 End;
 
 //= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
-Function GetSourceFrequency(pc:TPCElement):Double;
+Function GetSourceFrequency(pc:TPCElement):Double; // TODO - applicable to VCCS?
 
 Var
     pVsrc:TVsourceObj;

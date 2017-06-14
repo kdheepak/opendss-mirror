@@ -142,11 +142,10 @@ USES Command, ArrayDef, ParserDel, SysUtils, DSSClassDefs, DSSGlobals,
      DSSClass, DSSObject, Utilities, Solution,
      EnergyMeter, Generator, LoadShape, Load, PCElement,   CktElement,
      uComplex,  mathutil,  Bus,  SolutionAlgs,
-     DSSForms,  ExecCommands, Executive, Dynamics,
-     DssPlot,
-     Capacitor, Reactor, Line, Lineunits, Math,
+     {$IFDEF FPC}CmdForms,{$ELSE}DSSForms,DssPlot,{$ENDIF} ExecCommands, Executive,
+     Dynamics, Capacitor, Reactor, Line, Lineunits, Math,
      Classes,  CktElementClass, Sensor,  { ExportCIMXML,} NamedObject,
-     RegularExpressionsCore, PstCalc;
+     {$IFDEF FPC}RegExpr,{$ELSE}RegularExpressionsCore,{$ENDIF} PstCalc;
 
 Var
    SaveCommands, DistributeCommands,  DI_PlotCommands,
@@ -221,6 +220,7 @@ Begin
      THEN Begin
             MakeNewCircuit(ObjName);  // Make a new circuit
             ClearEventLog;      // Start the event log in the current directory
+            ClearErrorLog;
           End
      ELSE    // Everything else must be a circuit element or DSS Object
         Begin
@@ -261,6 +261,47 @@ End;
 //----------------------------------------------------------------------------
 FUNCTION DoBatchEditCmd:Integer;
 // batchedit type=xxxx name=pattern  editstring
+{$IFDEF FPC}
+VAR
+   ObjType, Pattern:String;
+   RegEx1: TRegExpr;
+   pObj: TDSSObject;
+   Params: Integer;
+Begin
+  Result := 0;
+  GetObjClassAndName(ObjType, Pattern);
+  IF CompareText(ObjType, 'circuit')=0 THEN Begin
+    // Do nothing
+  End ELSE Begin
+
+    LastClassReferenced := ClassNames.Find(ObjType);
+
+    CASE LastClassReferenced of
+      0: Begin
+        DoSimpleMsg('BatchEdit Command: Object Type "' + ObjType + '" not found.'+ CRLF + parser.CmdString, 267);
+        Exit;
+        End;{Error}
+    ELSE
+      Params:=Parser.Position;
+      ActiveDSSClass := DSSClassList.Get(LastClassReferenced);
+      RegEx1:=TRegExpr.Create;
+//      RegEx1.Options:=[preCaseLess];RegEx1.
+      RegEx1.Expression:=UTF8String(Pattern);
+      ActiveDSSClass.First;
+      pObj:=ActiveDSSClass.GetActiveObj;
+      while pObj <> Nil do begin
+        if RegEx1.Exec(UTF8String(pObj.Name)) then begin
+          Parser.Position:=Params;
+          ActiveDSSClass.Edit;
+        end;
+        ActiveDSSClass.Next;
+        pObj:=ActiveDSSClass.GetActiveObj;
+      end;
+      RegEx1.Free;
+    End;
+  End;
+End;
+{$ELSE}
 VAR
    ObjType, Pattern:String;
    RegEx1: TPerlRegEx;
@@ -300,6 +341,7 @@ Begin
     End;
   End;
 End;
+{$ENDIF}
 
 //----------------------------------------------------------------------------
 FUNCTION DoRedirect(IsCompile:Boolean):Integer;
@@ -1123,6 +1165,7 @@ Begin
             DoResetFaults ;
             DoResetControls;
             ClearEventLog;
+            ClearErrorLog;
             DoResetKeepList;
        End
     ELSE
@@ -1133,7 +1176,7 @@ Begin
             END;
        'F'{Faults}:   DoResetFaults;
        'C'{Controls}: DoResetControls;
-       'E'{EventLog}: ClearEventLog;
+       'E'{EventLog and ErrorLog}: Begin ClearEventLog;  ClearErrorLog; End;
        'K': DoResetKeepList;
 
       ELSE
@@ -2975,7 +3018,7 @@ Begin
 End;
 
 FUNCTION DoDI_PlotCmd:Integer;
-{$IFNDEF DLL_ENGINE}
+{$IF not (defined(DLL_ENGINE) or defined(FPC))}
 Var
     ParamName, Param:String;
     ParamPointer, i:Integer;
@@ -2988,7 +3031,7 @@ Var
     PeakDay:Boolean;
 {$ENDIF}
 Begin
-{$IFNDEF DLL_ENGINE}
+{$IF not (defined(DLL_ENGINE) or defined(FPC))}
      IF DIFilesAreOpen Then EnergyMeterClass.CloseAllDIFiles;
 
      If Not Assigned(DSSPlotObj) Then DSSPlotObj := TDSSPlot.Create;
@@ -3038,7 +3081,7 @@ Begin
 End;
 
 FUNCTION DoCompareCasesCmd:Integer;
-{$IFNDEF DLL_ENGINE}
+{$IF not (defined(DLL_ENGINE) or defined(FPC))}
 Var
     ParamName, Param:String;
     ParamPointer:Integer;
@@ -3048,7 +3091,7 @@ Var
     CaseName2, WhichFile:String;
 {$ENDIF}
 Begin
-{$IFNDEF DLL_ENGINE}
+{$IF not (defined(DLL_ENGINE) or defined(FPC))}
      IF DIFilesAreOpen Then EnergyMeterClass.CloseAllDIFiles;
      If Not Assigned(DSSPlotObj) Then DSSPlotObj := TDSSPlot.Create;
      CaseName1 := 'base';
@@ -3094,7 +3137,7 @@ Begin
 End;
 
 FUNCTION DoYearlyCurvesCmd:Integer;
-{$IFNDEF DLL_ENGINE}
+{$IF not (defined(DLL_ENGINE) or defined(FPC))}
 Var
     ParamName, Param:String;
     ParamPointer, i:Integer;
@@ -3106,7 +3149,7 @@ Var
     WhichFile:String;
 {$ENDIF}
 Begin
-{$IFNDEF DLL_ENGINE}
+{$IF not (defined(DLL_ENGINE) or defined(FPC))}
      IF DIFilesAreOpen Then EnergyMeterClass.CloseAllDIFiles;
 
      If Not Assigned(DSSPlotObj) Then DSSPlotObj := TDSSPlot.Create;
@@ -3169,6 +3212,7 @@ Begin
 End;
 
 FUNCTION DoVisualizeCmd:Integer;
+{$IF not defined(FPC)}
 Var
     DevIndex    :integer;
     Param       :String;
@@ -3178,7 +3222,9 @@ Var
     Quantity    :Integer;
     ElemName    :String;
     pElem       :TDSSObject;
+{$ENDIF}
 Begin
+{$IF not defined(FPC)}
      Result := 0;
      // Abort if no circuit or solution
      If not assigned(ActiveCircuit) Then
@@ -3238,6 +3284,7 @@ Begin
      End Else Begin
         DoSimpleMsg('Requested Circuit Element: "' + ElemName + '" Not Found.',282 ); // Did not find it ..
      End;
+{$ENDIF}
 End;
 
 FUNCTION DoCloseDICmd:Integer;
@@ -3838,6 +3885,7 @@ FUNCTION DoVarCmd:Integer;
 VAR
    ParamName:String;
    Param:String;
+   Str  : String;
    iVar : Integer;
    MsgStrings : TStringList;
 
@@ -3851,12 +3899,20 @@ Begin
       If Length(Param)=0 Then  // show all vars
       Begin
           If NoFormsAllowed Then Exit;
+          {
           MsgStrings := TStringList.Create;
           MsgStrings.Add('Variable, Value');
           for iVar := 1 to ParserVars.NumVariables  do
               MsgStrings.Add(ParserVars.VarString[iVar] );
           ShowMessageForm(MsgStrings);
-          MsgStrings.Free;
+          MsgStrings.Free;}
+          Str := 'Variable, Value' + CRLF;
+          for iVar := 1 to ParserVars.NumVariables do
+            Str := Str + ParserVars.VarString[iVar]+CRLF;
+
+          DoSimpleMsg(Str, 999345);
+
+
       End Else if Length(ParamName)=0 then   // show value of this var
       Begin
            GlobalResult := Param;  // Parser substitutes @var with value

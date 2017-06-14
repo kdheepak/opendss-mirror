@@ -1,9 +1,8 @@
-
 unit ExpControl;
 
 {
   ----------------------------------------------------------
-  Copyright (c) 2015, University of  Pittsburgh
+  Copyright (c) 2015-2016, University of Pittsburgh
   All rights reserved.
   ----------------------------------------------------------
 
@@ -13,8 +12,8 @@ unit ExpControl;
 INTERFACE
 
   uses
-    System.Generics.Collections, Command, ControlClass, ControlElem,
-    CktElement, DSSClass, PVSystem, Arraydef, ucomplex,
+    {$IFDEF FPC}gqueue{$ELSE}System.Generics.Collections{$ENDIF}, Command,
+    ControlClass, ControlElem, CktElement, DSSClass, PVSystem, Arraydef, ucomplex,
     utilities, Dynamics, PointerList, Classes, StrUtils;
 
   type
@@ -163,7 +162,8 @@ Begin
      PropertyHelp[1] := 'Array list of PVSystems to be controlled.'+CRLF+CRLF+
                         'If not specified, all PVSystems in the circuit are assumed to be controlled by this ExpControl.';
      PropertyHelp[2] := 'Per-unit voltage at which reactive power is zero; defaults to 1.0.'+CRLF+CRLF+
-                        'This may self-adjust when VregTau > 0, limited by VregMin and VregMax '+
+                        'This may dynamically self-adjust when VregTau > 0, limited by VregMin and VregMax.'+
+                        'If imput as 0, Vreg will be initialized from a snapshot solution with no inverter Q.'+
                         'The equilibrium point of reactive power is also affected by Qbias';
      PropertyHelp[3] := 'Per-unit reactive power injection / per-unit voltage deviation from Vreg; defaults to 50.'+CRLF+CRLF+
                         'Unlike InvControl, base reactive power is constant at the inverter kva rating.';
@@ -235,7 +235,7 @@ Begin
            FPVSystemPointerList.Clear; // clear this for resetting on first sample
            FListSize := FPVSystemNameList.count;
            end;
-        2: If Parser.DblValue > 0 then FVregInit := Parser.DblValue;
+        2: If Parser.DblValue >= 0 then FVregInit := Parser.DblValue;
         3: If Parser.DblValue > 0 then FSlope := Parser.DblValue;
         4: If Parser.DblValue >= 0 then FVregTau := Parser.DblValue; // zero means fixed Vreg
         5: FQbias := Parser.DblValue;
@@ -252,6 +252,7 @@ Begin
       ParamName := Parser.NextParam;
       Param := Parser.StrValue;
     End;
+    RecalcElementData;
   End;
 End;
 
@@ -265,6 +266,10 @@ Begin
    OtherExpControl := Find(ExpControlName);
    IF OtherExpControl<>Nil THEN
    WITH ActiveExpControlObj Do Begin
+
+      NPhases := OtherExpControl.Fnphases;
+      NConds  := OtherExpControl.Fnconds; // Force Reallocation of terminal stuff
+
       for i := 1 to FPVSystemPointerList.ListSize do begin
         ControlledElement[i]       := OtherExpControl.ControlledElement[i];
         FWithinTol[i]              := OtherExpControl.FWithinTol[i];
@@ -335,7 +340,7 @@ Begin
      FPVSystemPointerList := PointerList.TPointerList.Create(20);  // Default size and increment
 
      // user parameters for dynamic Vreg
-     FVregInit := 1.0;
+     FVregInit := 1.0; // 0 means to find it during initialization
      FSlope := 50.0;
      FVregTau := 1200.0;
      FVregs := nil;
@@ -350,7 +355,6 @@ Begin
      FPendingChange         := nil;
 
      InitPropertyValues(0);
-   //  RecalcElementData;
 End;
 
 destructor TExpControlObj.Destroy;
@@ -385,6 +389,8 @@ Begin
     for i := 1 to FPVSystemPointerList.ListSize do begin
         // User ControlledElement[] as the pointer to the PVSystem elements
          ControlledElement[i] :=  TPVSystemObj(FPVSystemPointerList.Get(i));  // pointer to i-th PVSystem
+         Nphases := ControlledElement[i].NPhases;  // TEMC TODO - what if these are different sizes (same concern exists with InvControl)
+         Nconds  := Nphases;
          if (ControlledElement[i] = nil) then
             DoErrorMsg('ExpControl: "' + Self.Name + '"',
               'Controlled Element "' + FPVSystemNameList.Strings[i-1] + '" Not Found.',
@@ -399,6 +405,18 @@ procedure TExpControlObj.MakePosSequence;
 // ***  This assumes the PVSystem devices have already been converted to pos seq
 begin
   IF FPVSystemPointerList.ListSize = 0 Then  RecalcElementData;
+  // TEMC - from here to inherited was copied from InvControl
+  Nphases := 3;
+  Nconds := 3;
+  Setbus(1, MonitoredElement.GetBus(ElementTerminal));
+  IF FPVSystemPointerList.ListSize > 0  Then Begin
+    {Setting the terminal of the ExpControl device to same as the 1st PVSystem element}
+    { This sets it to a realistic value to avoid crashes later }
+    MonitoredElement :=  TDSSCktElement(FPVSystemPointerList.Get(1));   // Set MonitoredElement to 1st PVSystem in lise
+    Setbus(1, MonitoredElement.Firstbus);
+    Nphases := MonitoredElement.NPhases;
+    Nconds := Nphases;
+  End;
   inherited;
 end;
 
@@ -461,8 +479,8 @@ BEGIN
       if (FWithinTol[i]=False) then begin
         // look up Qpu from the slope crossing at Vreg, and add the bias
         Qpu := -FSlope * (FPresentVpu[i] - FVregs[i]) + FQbias;
-        If ShowEventLog Then AppendtoEventLog('ExpControl.' + Self.Name+','+PVSys.Name+',',
-          Format('  FVreg= %.5g, Vpu= %.5g', [FVregs[i],FPresentVpu[i]]));
+        If ShowEventLog Then AppendtoEventLog('ExpControl.' + Self.Name+','+PVSys.Name,
+          Format(' Setting Qpu= %.5g at FVreg= %.5g, Vpu= %.5g', [Qpu, FVregs[i],FPresentVpu[i]]));
       end;
 
       // apply limits on Qpu, then define the target in kVAR
@@ -477,16 +495,17 @@ BEGIN
       Qset := FPriorQ[i] + DeltaQ * FdeltaQ_factor;
  //     Qset := FQbias * Qbase;
       If PVSys.Presentkvar <> Qset Then PVSys.Presentkvar := Qset;
-      If ShowEventLog Then AppendtoEventLog('ExpControl.' + Self.Name +','+ PVSys.Name+',',
-                             Format('**%s mode set PVSystem output var level to**, kvar= %.5g',
-                             [GetPropertyValue(2), PVSys.Presentkvar,FPresentVpu[i]]));
+      If ShowEventLog Then AppendtoEventLog('ExpControl.' + Self.Name +','+ PVSys.Name,
+                             Format(' Setting PVSystem output kvar= %.5g',
+                             [PVSys.Presentkvar]));
       FPriorQ[i] := Qset;
       FPriorVpu[i] := FPresentVpu[i];
       ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
       // Force recalc of power parms
       Set_PendingChange(NONE,i);
-    end
+    end
   end;
+
 end;
 
 PROCEDURE TExpControlObj.Sample;
@@ -511,31 +530,31 @@ begin
       Vpresent := 0;
       For j := 1 to PVSys.NPhases Do Vpresent := Vpresent + Cabs(cBuffer[j]);
       FPresentVpu[i] := (Vpresent / PVSys.NPhases) / (basekV * 1000.0);
+      // if initializing with Vreg=0 in static mode, we want to FIND Vreg
+      if (ActiveCircuit.Solution.ControlMode = CTRLSTATIC) and (FVregInit <= 0.0) then
+        FVregs[i] := FPresentVpu[i];
       // both errors are in per-unit
       Verr := Abs(FPresentVpu[i] - FPriorVpu[i]);
       Qerr := Abs(PVSys.Presentkvar - FTargetQ[i]) / PVSys.kVARating;
-
       // process the sample
-      if (PVSys.InverterON = FALSE) and (PVSys.VarFollowInverter = TRUE) then begin
-        FVregs[i] := FPresentVpu[i];
+      if (PVSys.InverterON = FALSE) and (PVSys.VarFollowInverter = TRUE) then begin // not injecting
+        if (FVregTau > 0.0) and (FVregs[i] <= 0.0) then
+          FVregs[i] := FPresentVpu[i]; // wake up to the grid voltage, otherwise track it while not injecting
         continue;
       end;
       PVSys.VWmode := FALSE;
-      if (FWithinTol[i] = False) then begin
-        if ((Verr > FVoltageChangeTolerance) or (Qerr > FVarChangeTolerance) or
+      if ((Verr > FVoltageChangeTolerance) or (Qerr > FVarChangeTolerance) or
           (ActiveCircuit.Solution.ControlIteration = 1)) then begin
-          FWithinTol[i] := False;
-          Set_PendingChange(CHANGEVARLEVEL,i);
-          With  ActiveCircuit.Solution.DynaVars Do
-            ControlActionHandle := ActiveCircuit.ControlQueue.Push (intHour, t + TimeDelay, PendingChange[i], 0, Self);
-          If ShowEventLog Then AppendtoEventLog('ExpControl.' + Self.Name+' '+PVSys.Name, Format
-            ('**Ready to change var output due in %s mode**, Vavgpu= %.5g, VPriorpu=%.5g',
-            [GetPropertyValue(2), FPresentVpu[i],FPriorVpu[i]]));
-        end else begin
-          if ((Verr <= FVoltageChangeTolerance) and (Qerr <= FVarChangeTolerance)) then FWithinTol[i] := True;
-          If ShowEventLog Then AppendtoEventLog('ExpControl.' + Self.Name+' '+PVSys.Name, Format
-            ('**Hit Tolerance**, Vavgpu= %.5g, VPriorpu=%.5g', [FPresentVpu[i],FPriorVpu[i]]));
-        end;
+        FWithinTol[i] := False;
+        Set_PendingChange(CHANGEVARLEVEL,i);
+        With  ActiveCircuit.Solution.DynaVars Do
+          ControlActionHandle := ActiveCircuit.ControlQueue.Push (intHour, t + TimeDelay, PendingChange[i], 0, Self);
+        If ShowEventLog Then AppendtoEventLog('ExpControl.' + Self.Name+' '+PVSys.Name, Format
+          (' outside Hit Tolerance, Verr= %.5g, Qerr=%.5g', [Verr,Qerr]));
+      end else begin
+        FWithinTol[i] := True;
+        If ShowEventLog Then AppendtoEventLog('ExpControl.' + Self.Name+' '+PVSys.Name, Format
+          (' within Hit Tolerance, Verr= %.5g, Qerr=%.5g', [Verr,Qerr]));
       end;
     end;  {For}
   end; {If FlistSize}
@@ -601,7 +620,7 @@ begin
 
   //Initialize arrays
   For i := 1 to FlistSize Do begin
-    PVSys := PVSysClass.Find(FPVSystemNameList.Strings[i-1]);
+//    PVSys := PVSysClass.Find(FPVSystemNameList.Strings[i-1]);
 //    Set_NTerms(PVSys.NTerms); // TODO - what is this for?
     FPriorVpu[i] := 0.0;
     FPresentVpu[i] := 0.0;
@@ -675,10 +694,9 @@ Var
 begin
   for j := 1 to FPVSystemPointerList.ListSize do begin
     PVSys := ControlledElement[j];
-    FWithinTol[j] := False;
     if FVregTau > 0.0 then begin
       dt :=  ActiveCircuit.Solution.Dynavars.h;
-      Verr := FPresentVpu[j] - FVregs[j];
+      Verr := FPresentVpu[j] - FVregs[j];
       FVregs[j] := FVregs[j] + Verr * (1 - Exp (-dt / FVregTau));
     end else begin
       Verr := 0.0;
@@ -686,8 +704,8 @@ begin
     if FVregs[j] < FVregMin then FVregs[j] := FVregMin;
     if FVregs[j] > FVregMax then FVregs[j] := FVregMax;
     PVSys.Set_Variable(5,FVregs[j]);
-    If ShowEventLog Then AppendtoEventLog('ExpControl.' + Self.Name+','+PVSys.Name+',',
-      Format('  **VREG set new FVreg= %.5g Vpu=%.5g Verr=%.5g',
+    If ShowEventLog Then AppendtoEventLog('ExpControl.' + Self.Name+','+PVSys.Name,
+      Format(' Setting new Vreg= %.5g Vpu=%.5g Verr=%.5g',
       [FVregs[j], FPresentVpu[j], Verr]));
   end;
 end;

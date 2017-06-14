@@ -93,11 +93,19 @@ type
     procedure Set_ControlActionsDone(Value: WordBool); safecall;
     procedure Cleanup; safecall;
     procedure FinishTimeStep; safecall;
+    function Get_Process_Time: Double; safecall;
+    function Get_Total_Time: Double; safecall;
+    procedure Set_Total_Time(Value: Double); safecall;
+    function Get_Time_of_Step: Double; safecall;
+    function Get_IntervalHrs: Double; safecall;
+    procedure Set_IntervalHrs(Value: Double); safecall;
+    function Get_MinIterations: Integer; safecall;
+    procedure Set_MinIterations(Value: Integer); safecall;
   end;
 
 implementation
 
-uses ComServ, DSSGlobals, Math, LoadShape, Utilities, YMatrix, Variants, SolutionAlgs;
+uses ComServ, DSSGlobals, Math, LoadShape, Utilities, YMatrix, Variants, SolutionAlgs, Solution;
 
 function TSolution.Get_Frequency: Double;
 begin
@@ -217,7 +225,10 @@ end;
 
 procedure TSolution.Set_StepSize(Value: Double);
 begin
-     If ActiveCircuit <> Nil Then ActiveCircuit.Solution.dynavars.h  := Value;
+     If ActiveCircuit <> Nil Then Begin
+         ActiveCircuit.Solution.dynavars.h  := Value;
+         Set_IntervalHrs(Value/3600.0);     // Keep IntervalHrs in synch with time step size
+     End;
 end;
 
 procedure TSolution.Set_Tolerance(Value: Double);
@@ -656,6 +667,47 @@ begin
                 Increment_time;
  //               DefaultHourMult := DefaultDailyShapeObj.getmult(TDynamicsrec.dblHour);
     End;
+end;
+
+function TSolution.Get_Process_Time: Double;
+begin
+    If ActiveCircuit <> Nil Then Result := ActiveCircuit.Solution.Time_Solve;
+end;
+
+function TSolution.Get_Total_Time: Double;
+begin
+    If ActiveCircuit <> Nil Then Result := ActiveCircuit.Solution.Total_Time;
+end;
+
+procedure TSolution.Set_Total_Time(Value: Double);
+begin
+     If ActiveCircuit <> Nil Then ActiveCircuit.Solution.Total_Time   :=  Value;
+end;
+
+function TSolution.Get_Time_of_Step: Double;
+begin
+    If ActiveCircuit <> Nil Then Result := ActiveCircuit.Solution.Time_Step;
+end;
+
+function TSolution.Get_IntervalHrs: Double;
+begin
+    If ActiveCircuit <> Nil Then Result := ActiveCircuit.Solution.IntervalHrs;
+end;
+
+procedure TSolution.Set_IntervalHrs(Value: Double);
+begin
+     If ActiveCircuit <> Nil Then ActiveCircuit.Solution.IntervalHrs := Value;
+end;
+
+function TSolution.Get_MinIterations: Integer;
+begin
+     If ActiveCircuit <> Nil Then Result := ActiveCircuit.Solution.MinIterations
+     Else Result := 0;
+end;
+
+procedure TSolution.Set_MinIterations(Value: Integer);
+begin
+    If ActiveCircuit <> Nil Then ActiveCircuit.Solution.MinIterations  := Value;
 end;
 
 initialization

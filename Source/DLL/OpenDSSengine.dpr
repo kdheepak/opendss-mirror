@@ -1,7 +1,7 @@
 library OpenDSSengine;
 
 { ----------------------------------------------------------
-  Copyright (c) 2008-2014, Electric Power Research Institute, Inc.
+  Copyright (c) 2008-2016, Electric Power Research Institute, Inc.
   All rights reserved.
   ----------------------------------------------------------
 
@@ -200,29 +200,34 @@ uses
   ImplLoadShapes in 'ImplLoadShapes.pas' {LoadShapes: CoClass},
   ImplFuses in 'ImplFuses.pas' {Fuses: CoClass},
   ImplIsources in 'ImplIsources.pas' {ISource: CoClass},
-  ExpControl in '..\Controls\ExpControl.pas',
   UPFC in '..\PCElements\UPFC.pas',
   ImplDSSimComs in 'ImplDSSimComs.pas',
   GenDispatcher in '..\Controls\GenDispatcher.pas',
   ImplPVSystems in 'ImplPVSystems.pas' {PVSystems: CoClass},
-  ImplVsources in 'ImplVsources.pas' {Vsources: CoClass};
+  ImplVsources in 'ImplVsources.pas' {Vsources: CoClass},
+  KLUSolve in '..\Common\KLUSolve.pas',
+  ScriptEdit in '..\Forms\ScriptEdit.pas',
+  vccs in '..\PCElements\vccs.pas',
+  MemoryMap_lib in '..\Meters\MemoryMap_lib.pas',
+  ExpControl in '..\Controls\ExpControl.pas',
+  ESPVLControl in '..\Controls\ESPVLControl.pas',
+  IndMach012 in '..\PCElements\IndMach012.pas',
+  ImplLineCodes in 'ImplLineCodes.pas' {LineCodes: CoClass};
 
 exports
   DllGetClassObject,
   DllCanUnloadNow,
   DllRegisterServer,
-  DllUnregisterServer,
+  DllUnregisterServer;
 
 {Special routines}
+{
   DSS_PutCommand,   // alternative to the Text.Command interface
   DSS_GetResult;    // alterative to the Text.Result interface
-
+}
 {$R *.TLB}
 
 {$R *.RES}
-
-
-
 
 begin
 
@@ -239,6 +244,5 @@ begin
   DSSExecutive := TExecutive.Create;  // Start the DSS when DSS interface is created
   DSSExecutive.CreateDefaultDSSItems;
 
-  //WriteDLLDebugFile(DSSDirectory);
 
 end.

@@ -25,7 +25,7 @@ interface
 USES
      Classes, Solution, SysUtils, ArrayDef, HashList, PointerList, CktElement,
      DSSClass, {DSSObject,} Bus, LoadShape, PriceShape, ControlQueue, uComplex,
-     AutoAdd, EnergyMeter, NamedObject, CktTree, Graphics;
+     AutoAdd, EnergyMeter, NamedObject, CktTree{$IFNDEF FPC}, Graphics{$ENDIF};
 
 
 TYPE
@@ -47,7 +47,7 @@ TYPE
 
     public
       BusName: String;
-      AddMarkerColor: Tcolor;
+      AddMarkerColor: {$IFNDEF FPC}Tcolor{$ELSE}Integer{$ENDIF};
       AddMarkerCode,
       AddMarkerSize: Integer;
 
@@ -136,6 +136,7 @@ TYPE
           Lines,
           Loads,
           ShuntCapacitors,
+					Reactors, // added for CIM XML export
           Feeders,
           SwtControls        :PointerList.TPointerList;
 
@@ -291,7 +292,8 @@ USES
      PDElement, CktElementClass,
      ParserDel,  DSSClassDefs, DSSGlobals, Dynamics,
      Line, Transformer,  Vsource,
-     Utilities,  DSSForms;
+     Utilities, {$IFDEF FPC} CmdForms,{$ELSE} DSSForms,{$ENDIF}
+     Executive;
 
 //----------------------------------------------------------------------------
 Constructor TDSSCircuit.Create(const aName:String);
@@ -354,6 +356,7 @@ BEGIN
      Lines           := TPointerList.Create(1000);
      Loads           := TPointerList.Create(1000);
      ShuntCapacitors := TPointerList.Create(20);
+		 Reactors        := TPointerList.Create(5);
 
      Buses        := Allocmem(Sizeof(Buses^[1])        * Maxbuses);
      MapNodeToBus := Allocmem(Sizeof(MapNodeToBus^[1]) * MaxNodes);
@@ -536,6 +539,7 @@ BEGIN
      Loads.Free;
      Lines.Free;
      ShuntCapacitors.Free;
+		 Reactors.Free;
 
      ControlQueue.Free;
 
@@ -758,6 +762,7 @@ BEGIN
        REG_CONTROL   :RegControls.Add(ActiveCktElement);
        LOAD_ELEMENT  :Loads.Add(ActiveCktElement);
        CAP_ELEMENT   :ShuntCapacitors.Add(ActiveCktElement);
+			 REACTOR_ELEMENT :Reactors.Add(ActiveCktElement);
 
        { Keep Lines, Transformer, and Lines and Faults in PDElements and separate lists
          so we can find them quickly.}
@@ -1191,6 +1196,7 @@ end;
 function TDSSCircuit.SaveVoltageBases: Boolean;
 Var  F:TextFile;
      i:integer;
+     VBases:string;
 Begin
 
      Result := FALSE;
@@ -1198,10 +1204,12 @@ Begin
         AssignFile(F, 'BusVoltageBases.DSS');
         Rewrite(F);
 
-        For i := 1 to NumBuses do
-          If Buses^[i].kVBase > 0.0 Then
-            Writeln(F, Format('SetkVBase Bus=%s  kvln=%.7g ', [BusList.Get(i), Buses^[i].kVBase]));
-
+//        For i := 1 to NumBuses do
+//          If Buses^[i].kVBase > 0.0 Then
+//            Writeln(F, Format('SetkVBase Bus=%s  kvln=%.7g ', [BusList.Get(i), Buses^[i].kVBase]));
+        DSSExecutive.Command := 'get voltagebases';
+        VBases := GlobalResult;
+        Writeln(F, 'Set Voltagebases='+VBases);
         CloseFile(F);
         Result := TRUE;
      Except
@@ -1405,7 +1413,7 @@ constructor TBusMarker.Create;
 begin
   inherited;
   BusName := '';
-  AddMarkerColor := clBlack;
+  AddMarkerColor := {$IFDEF FPC}0{$ELSE}clBlack{$ENDIF};
   AddMarkerCode := 4;
   AddMarkerSize := 1;
 end;

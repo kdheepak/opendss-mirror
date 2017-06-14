@@ -107,6 +107,8 @@ PROCEDURE ClearEventLog;
 PROCEDURE AppendToEventLog(const opdev:string; Const action:String);
 PROCEDURE LogThisEvent(Const EventName:String);
 
+PROCEDURE ClearErrorLog;
+
 {Routines for doing common things to complex numbers}
 PROCEDURE RotatePhasorDeg(Var Phasor:Complex; const  h, AngleDeg:Double);
 PROCEDURE RotatePhasorRad(Var Phasor:Complex; const  h, AngleRad:Double);
@@ -141,6 +143,7 @@ Procedure MakeDistributedGenerators(kW, PF:double; How:String; Skip:Integer; Fna
 
 Procedure Obfuscate;
 
+
 {Feeder Utilities} // not currently used
 Procedure EnableFeeders;
 Procedure DisableFeeders;
@@ -152,12 +155,13 @@ Procedure BackwardSweepAllFeeders;
 
 implementation
 
-Uses Windows,    SysUtils, ShellAPI,  Dialogs,      DSSClassDefs,
+Uses {$IFDEF FPC} Process, CmdForms,{$ELSE} Windows, ShellAPI, Dialogs, Graphics, DSSForms,{$ENDIF}
+     SysUtils,   DSSClassDefs,
      DSSGlobals, Dynamics, Executive, ExecCommands, ExecOptions,
-     Solution,   DSSObject,math,      DSSForms,     ParserDel,
-     Capacitor,  Reactor,  Generator, Load,
+     Solution,   DSSObject,math,
+     ParserDel,  Capacitor,Reactor,  Generator, Load,
      Line,       Fault,    Feeder,    HashList,
-     EnergyMeter,PCElement,ControlElem, Graphics;
+     EnergyMeter,PCElement,ControlElem;
 
 Const ZERONULL      :Integer=0;
       padString     :String='                                                  '; //50 blanks
@@ -234,6 +238,44 @@ BEGIN
     Result := Copy(S, dotpos+1, Length(S));
 End;
 
+{$IFDEF FPC}
+Procedure FireOffEditor(FileNm:String);
+Var
+   s: string;
+Begin
+  TRY
+  If FileExists(FileNm) Then
+  Begin
+{$IF (defined(Windows) or defined(MSWindows))}
+      RunCommand (DefaultEditor, [FileNm], s);
+{$ELSE}
+      RunCommand ('/bin/bash',['-c', DefaultEditor + ' ' + FileNm],s);
+{$ENDIF}
+  End;
+  EXCEPT
+      On E: Exception DO
+        DoErrorMsg('FireOffEditor.', E.Message,
+                   'Default Editor correctly specified???', 704);
+  END;
+End;
+
+Procedure DoDOSCmd(CmdString:String);
+Var //Handle:Word;
+   s: string;
+Begin
+  TRY
+{$IF (defined(Windows) or defined(MSWindows))}
+    RunCommand('cmd',['/c',CmdString],s);
+{$ELSE}
+    RunCommand('/bin/bash',['-c',CmdString],s);
+{$ENDIF}
+  EXCEPT
+      On E: Exception DO
+        DoSimpleMsg(Format('DoDOSCmd Error:%s. Error in Command "%s"',[E.Message, CmdString]), 704);
+  END;
+End;
+
+{$ELSE}
 // = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 Procedure FireOffEditor(FileNm:String);
 Var retval:Word;
@@ -273,6 +315,8 @@ Begin
         DoSimpleMsg(Format('DoDOSCmd Error:%s. Error in Command "%s"',[E.Message, CmdString]), 704);
   END;
 End;
+
+{$ENDIF}
 
 // = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 Function IntArrayToString( iarray:pIntegerArray; count:integer):String;
@@ -413,6 +457,7 @@ Begin
       'o': Result := CONTROLSOFF;
       'e': Result := EVENTDRIVEN;    // "event"
       't': Result := TIMEDRIVEN;     // "time"
+      'm': Result := MULTIRATE;     // "MultiRate"
     ELSE
        Result := CTRLSTATIC;
     End;
@@ -1059,10 +1104,11 @@ Begin
    Result := 'Unknown';
    If ActiveCircuit <> Nil Then
     CASE ActiveCircuit.Solution.Controlmode OF
-      CTRLSTATIC:    Result := 'STATIC';
-      EVENTDRIVEN:   Result := 'EVENT';
-      TIMEDRIVEN:    Result := 'TIME';
-      CONTROLSOFF:   Result := 'OFF';
+      CTRLSTATIC  : Result := 'STATIC';
+      EVENTDRIVEN : Result := 'EVENT';
+      TIMEDRIVEN  : Result := 'TIME';
+      MULTIRATE   : Result :=  'MULTIRATE';
+      CONTROLSOFF : Result := 'OFF';
     ELSE
                     Result := 'UNKNOWN'
     End;
@@ -1744,6 +1790,18 @@ Begin
   End;
 End;
 
+PROCEDURE ClearErrorLog;
+
+Begin
+  Try
+{****  WriteDLLDebugFile(Format('ClearEventLog: EventStrings= %p', [@EventStrings])); }
+       ErrorStrings.Clear;
+  Except
+       On E:Exception Do
+          Dosimplemsg(Format('Exception clearing error log: %s, @EventStrings=%p', [E.Message, @EventStrings]), 71511);
+  End;
+End;
+
 PROCEDURE LogThisEvent(Const EventName:String);
 
 Begin
@@ -2383,7 +2441,7 @@ Begin
     Finally
    // Writeln(F, 'Set allowduplicates=no');
     CloseFile(F);
-
+    SetlastResultFile(Fname);
     End;
 
 End;
@@ -2773,6 +2831,9 @@ End;
 FUNCTION  InterpretColorName(const s:string):Integer;
 
 Begin
+{$IFDEF FPC}
+        Result := 0; // RGB for black
+{$ELSE}
         Result := clBlue;  // default color
         Try
             if      CompareTextShortest(S,'black')=0  then Result := clBlack
@@ -2797,7 +2858,7 @@ Begin
         Except
            On E:Exception Do DoSimpleMsg('Invalid Color Specification: "' + S + '".', 724);
         End;
-
+{$ENDIF}
 End;
 
 Function MakeNewCktElemName(const oldname:string):string;

@@ -98,7 +98,6 @@ uses
   Load in '..\PCElements\Load.pas',
   LoadShape in '..\General\LoadShape.pas',
   mathutil in '..\Shared\mathutil.pas',
-  MessageForm in '..\Forms\MessageForm.pas' {MessageForm1},
   MeterClass in '..\Meters\MeterClass.pas',
   MeterElement in '..\Meters\MeterElement.pas',
   Monitor in '..\Meters\Monitor.pas',
@@ -147,9 +146,12 @@ uses
   VSource in '..\PCElements\VSource.pas',
   WireData in '..\General\WireData.pas',
   XfmrCode in '..\General\XfmrCode.pas',
-  Ymatrix in '..\Common\Ymatrix.pas' ,
+  Ymatrix in '..\Common\Ymatrix.pas' {,
+  TempShape in '..\General\TempShape.pas',
+  XYcurve in '..\General\XYcurve.pas',
+  PriceShape in '..\General\PriceShape.pas';
 
-{$R *.RES}
+{$R *.RES},
   TempShape in '..\General\TempShape.pas',
   XYcurve in '..\General\XYcurve.pas',
   PriceShape in '..\General\PriceShape.pas',
@@ -173,7 +175,13 @@ uses
   GICTransformer in '..\PDElements\GICTransformer.pas',
   ExpControl in '..\Controls\ExpControl.pas',
   UPFC in '..\PCElements\UPFC.pas',
-  GenDispatcher in '..\Controls\GenDispatcher.pas';
+  GenDispatcher in '..\Controls\GenDispatcher.pas',
+  KLUSolve in '..\Common\KLUSolve.pas',
+  ScriptEdit in '..\Forms\ScriptEdit.pas',
+  vccs in '..\PCElements\vccs.pas',
+  MemoryMap_lib in '..\Meters\MemoryMap_lib.pas',
+  ESPVLControl in '..\Controls\ESPVLControl.pas',
+  IndMach012 in '..\PCElements\IndMach012.pas';
 
 {$R *.RES}
 
@@ -195,12 +203,16 @@ begin
     OutputDirectory := StartupDirectory;
     DSSExecutive.Command := 'compile ' + ParamStr(1);
     ExitCode := DSSExecutive.Error;
+    If ExitCode <> 0 Then Begin
+        {write error log to a file}
+
+        ErrorStrings.SaveToFile('STDERR_OpenDSS.Txt')
+    End;
   end else begin
     {Instantiate basic forms}
     Application.CreateForm(TControlPanel, ControlPanel);
-  Application.CreateForm(TMessageForm1, MessageForm1);
   Application.CreateForm(TTViewForm, TViewForm);
-  Application.CreateForm(TMainEditForm, MainEditForm);
+  //  Application.CreateForm(TMainEditForm, MainEditForm);
   Application.CreateForm(TProgress, Progress);
   Application.CreateForm(TPlotOptionsForm, PlotOptionsForm);
   Application.CreateForm(TListBoxForm, ListBoxForm);
@@ -209,8 +221,8 @@ begin
   Application.CreateForm(TChannelSelectForm, ChannelSelectForm);
   ControlPanelCreated := TRUE;
     ControlPanel.InitializeForm;
-    MessageForm1.Editor.Clear;
-    MessageForm1.WindowState := wsMinimized;
+ //   ControlPanel.MessageEdit.Clear;
+//    MessageForm1.WindowState := wsMinimized;
     ControlPanel.Show;
     Application.Run;
   end;

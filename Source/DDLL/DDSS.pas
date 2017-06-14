@@ -2,9 +2,9 @@ unit DDSS;
 
 interface
 
-function DSSI(mode:longint;arg:longint):longint;stdcall;
-function DSSS(mode:longint;arg:pAnsiChar):pAnsiChar;stdcall;
-procedure DSSV(mode:longint;out arg:Olevariant);stdcall;
+function DSSI(mode:longint;arg:longint):longint;cdecl;
+function DSSS(mode:longint;arg:pAnsiChar):pAnsiChar;cdecl;
+procedure DSSV(mode:longint;out arg:variant);cdecl;
 
 implementation
 
@@ -20,7 +20,7 @@ uses DSSClassDefs,
      Variants,
      ExecCommands, ExecOptions;
 
-function DSSI(mode:longint;arg:longint):longint;stdcall;
+function DSSI(mode:longint;arg:longint):longint;cdecl;
 begin
   Result:=0;
   case mode of
@@ -50,13 +50,16 @@ begin
   end;
   6: begin  // DSS.Reset
         {Put any code here necessary to reset for specific systems};
+
   end;
   7: begin  // DSS.Allowforms read
-     if Not NoFormsAllowed then Result:=1;
+     if NoFormsAllowed then Result:=1
+     else Result:=0;
   end;
   8: begin  // DSS.Allowforms write
-     If arg=0 Then NoFormsAllowed := TRUE;  // Only set to False
-     If NoFormsAllowed Then CloseDownForms;  // DSSForms
+     If arg=0 Then NoFormsAllowed := TRUE  // Only set to False
+     else NoFormsAllowed := FALSE;
+//     If NoFormsAllowed Then CloseDownForms;  // DSSForms
   end
   else
       Result:=-1;
@@ -64,7 +67,7 @@ begin
 end;
 
 //********************************String Type properties***************************
-function DSSS(mode:longint;arg:pAnsiChar):pAnsiChar;stdcall;
+function DSSS(mode:longint;arg:pAnsiChar):pAnsiChar;cdecl;
 begin
   Result:=pAnsiChar(AnsiString('0')); // Default return value
   case mode of
@@ -90,7 +93,7 @@ begin
 end;
 
 //********************************Variant Type properties***************************
-procedure DSSV(mode:longint;out arg:Olevariant);stdcall;
+procedure DSSV(mode:longint;out arg:variant);cdecl;
 
 Var
   i,k:Integer;

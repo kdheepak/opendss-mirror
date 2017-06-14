@@ -11,7 +11,7 @@ interface
 Uses Command;
 
 CONST
-        NumExecOptions = 105;
+        NumExecOptions = 110;
 
 VAR
          ExecOption,
@@ -138,6 +138,11 @@ Begin
      ExecOption[103] := 'MarkRelays';
      ExecOption[104] := 'RelayMarkerCode';
      ExecOption[105] := 'RelayMarkerSize';
+     ExecOption[106] := 'ProcessTime';
+     ExecOption[107] := 'TotalTime';
+     ExecOption[108] := 'StepTime';
+     ExecOption[109] := 'SampleEnergyMeters';
+     ExecOption[110] := 'MinIterations'; // default is 2
 
 
 
@@ -160,7 +165,7 @@ Begin
                     CRLF+'  Yearly (follow Yearly curve),'+
                     CRLF+'  DIrect,'+
                     CRLF+'  DUtycycle,'+
-                    CRLF+'  Time, ( see LoadShapeClass option)' +
+                    CRLF+'  Time, ( see LoadShapeClass, SampleEnergymeters options)' +
                     CRLF+'  DYnamic,  ( see LoadShapeClass option)'+
                     CRLF+'  Harmonic,'+
                     CRLF+'  HarmonicT,  (sequential Harmonic Mode)'+
@@ -259,7 +264,7 @@ Begin
                         'Examples:'+Crlf+CRlf+
                         'Set autobuslist=(bus1, bus2, bus3, ... )' +CRLF+
                         'Set autobuslist=(file=buslist.txt)';
-     OptionHelp[43] := '{OFF | STATIC |EVENT | TIME}  Default is "STATIC".  Control mode for the solution. ' +
+     OptionHelp[43] := '{OFF | STATIC |EVENT | TIME | MULTIRATE}  Default is "STATIC".  Control mode for the solution. ' +
                         'Set to OFF to prevent controls from changing.' + CRLF +
                         'STATIC = Time does not advance.  Control actions are executed in order of shortest time to act ' +
                         'until all actions are cleared from the control queue.  Use this mode for power flow solutions which may require several ' +
@@ -268,6 +273,9 @@ Begin
                         'are executed and the time is advanced automatically to the time of the event. ' + crlf +crlf+
                         'TIME = solution is time driven.  Control actions are executed when the time for the pending ' +
                         'action is reached or surpassed.' + CRLF + CRLF +
+                        'MULTIRATE = solution is time driven.  Control actions are executed when the time for the pending ' +
+                        'action is reached or surpassed. In this control mode a solution is performed after each control action' +
+                        'is performed to reduce the error accumulated when the time step is to long' + CRLF + CRLF +
                         'Controls may reset and may choose not to act when it comes their time. ' +CRLF+
                         'Use TIME mode when modeling a control externally to the DSS and a solution mode such as ' +
                         'DAILY or DUTYCYCLE that advances time, or set the time (hour and sec) explicitly from the external program. ';
@@ -381,7 +389,13 @@ Begin
      OptionHelp[103] := '{YES/TRUE | NO/FALSE}  Default is NO. Mark Relay locations with a symbol. See RelayMarkerCode and RelayMarkerSize. ';
      OptionHelp[104] := 'Numeric marker code (0..47 see Users Manual) for Relay elements. Default is 17. (Color=Lime)';
      OptionHelp[105] := 'Size of Relay marker. Default is 5.';
-
+     OptionHelp[106] := 'The time in microseconds to execute the solve process in the most recent time step or solution (read only)';
+     OptionHelp[107] := 'The accumulated time in microseconds to solve the circuit since the last reset. Set this value to reset the accumulator.';
+     OptionHelp[108] := 'Process time + meter sampling time in microseconds for most recent time step - (read only)';
+     OptionHelp[109] := '{YES/TRUE | NO/FALSE} Overrides default value for sampling EnergyMeter objects at the end of the solution loop. ' +
+                        'Normally Time and Duty modes do not automatically sample EnergyMeters whereas Daily, Yearly, M1, M2, M3, LD1 and LD2 modes do. ' +
+                        'Use this Option to turn sampling on or off';
+     OptionHelp[110] := 'Minimum number of iterations required for a solution. Default is 2.';
 End;
 //----------------------------------------------------------------------------
 FUNCTION DoSetCmd_NoCircuit:Boolean;  // Set Commands that do not require a circuit
@@ -602,12 +616,17 @@ Begin
           103: ActiveCircuit.MarkRelays       := InterpretYesNo(Param);
           104: ActiveCircuit.RelayMarkerCode  := Parser.IntValue;
           105: ActiveCircuit.RelayMarkerSize  := Parser.IntValue;
+          107: ActiveCircuit.Solution.Total_Time  :=  Parser.DblValue;
+          109: ActiveCircuit.Solution.SampleTheMeters :=  InterpretYesNo(Param);
+          110: ActiveCircuit.solution.MinIterations   := Parser.IntValue;
          ELSE
            // Ignore excess parameters
          End;
 
          CASE ParamPointer OF
               3,4: ActiveCircuit.Solution.Update_dblHour;
+              // Update IntervalHrs for devices that integrate
+              7,18: ActiveCircuit.Solution.IntervalHrs := ActiveCircuit.Solution.DynaVars.h / 3600.0;
          END;
 
          ParamName := Parser.NextParam;
@@ -658,7 +677,7 @@ Begin
             8: AppendGlobalResult(GetSolutionModeID);
             9: AppendGlobalResult(GetRandomModeID);
            10: AppendGlobalResult(IntToStr(ActiveCircuit.solution.NumberOfTimes));
-           11: AppendGlobalResult(Format('[ %d, %-g ]', [IntToStr(ActiveCircuit.solution.DynaVars.intHour), ActiveCircuit.solution.DynaVars.t]));
+           11: AppendGlobalResult(Format('[ %d, %-g ] !... %-g (hours)', [ActiveCircuit.solution.DynaVars.intHour, ActiveCircuit.solution.DynaVars.t, ActiveCircuit.solution.DynaVars.dblHour ]));
            14: AppendGlobalResult(ActiveCircuit.name);
            15: AppendGlobalResult(DefaultEditor);
            16: AppendGlobalResult(Format('%-g' ,[ActiveCircuit.solution.ConvergenceTolerance]));
@@ -767,10 +786,15 @@ Begin
            99: If ActiveCircuit.MarkReclosers Then AppendGlobalResult('Yes') else AppendGlobalResult('No');
           100: AppendGlobalResult(Format('%d' ,[ActiveCircuit.RecloserMarkerCode]));
           101: AppendGlobalResult(Format('%d' ,[ActiveCircuit.RecloserMarkerSize]));
-          102: UpdateRegistry                    := InterpretYesNo(Param);
+          102: If UpdateRegistry Then AppendGlobalResult('Yes') else AppendGlobalResult('No');
           103: If ActiveCircuit.MarkRelays Then AppendGlobalResult('Yes') else AppendGlobalResult('No');
           104: AppendGlobalResult(Format('%d' ,[ActiveCircuit.RelayMarkerCode]));
           105: AppendGlobalResult(Format('%d' ,[ActiveCircuit.RelayMarkerSize]));
+          106: AppendGlobalResult(Format('%-g' ,[ActiveCircuit.Solution.Time_Solve]));
+          107: AppendGlobalResult(Format('%-g' ,[ActiveCircuit.Solution.Total_Time]));
+          108: AppendGlobalResult(Format('%-g' ,[ActiveCircuit.Solution.Time_Step]));
+          109: If ActiveCircuit.Solution.SampleTheMeters Then AppendGlobalResult('Yes') else AppendGlobalResult('No');
+          110: AppendGlobalResult(IntToStr(ActiveCircuit.solution.MinIterations));
          ELSE
            // Ignore excess parameters
          End;
@@ -807,3 +831,5 @@ Finalization
 
 
 end.
+
+

@@ -5,31 +5,73 @@
 
 // package epri.com.opendss.cim ;
 
-import java.io.*;
+// additions 11/22/2016: aVRDelay, TopologicalNodes, TopologicalIslands
+// removals  11/22/2016: targetValueUnitMultiplier
 
-import com.hp.hpl.jena.ontology.*;
-import com.hp.hpl.jena.query.*;
-import com.hp.hpl.jena.rdf.model.*;
-import com.hp.hpl.jena.util.FileManager;
+import java.io.*;
+import java.util.HashMap;
+
+import org.apache.jena.ontology.*;
+import org.apache.jena.query.*;
+import org.apache.jena.rdf.model.*;
+import org.apache.jena.util.FileManager;
 
 public class CDPSM_to_DSS extends Object {
-  static final String nsCIM = "http://iec.ch/TC57/2010/CIM-schema-cim15#";
+  static final String nsCIM = "http://iec.ch/TC57/2012/CIM-schema-cim16#";
   static final String nsRDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
   static final String baseURI = "http://opendss";
 
-  static final String combinedOwl = "Combined.owl";
+	// helper class to keep track of the conductor counts for WireSpacingInfo instances
+	static class SpacingCount {
+    private final int nconds;
+    private final int nphases;
+
+    public SpacingCount(int nconds, int nphases) {
+        this.nconds = nconds;
+        this.nphases = nphases;
+    }
+
+    public int getNumConductors() {
+        return nconds;
+    }
+
+    public int getNumPhases() {
+        return nphases;
+    }
+	}
+
+	static HashMap<String,SpacingCount> mapSpacings = new HashMap<>();
 
   static String SafeProperty (Resource r, Property p, String def) {
     if (r.hasProperty(p)) return r.getProperty(p).getString();
     return def;
   }
 
-  static String SafePhases (Resource r, Property p) {
+  static String SafePhasesX (Resource r, Property p) {
     if (r.hasProperty(p)) {
       return r.getProperty(p).getObject().toString();
     }
     return "#PhaseCode.ABCN";
   }
+
+	static String SafeRegulatingMode (Resource r, Property p, String def) {
+		if (r.hasProperty(p)) {
+			String arg = r.getProperty(p).getObject().toString();
+			int hash = arg.lastIndexOf ("#RegulatingControlModeKind.");
+			return arg.substring (hash + 27);
+		}
+		return def;
+	}
+
+	static String DSSCapMode (String s) {
+		if (s.equals("currentFlow")) return "current";
+    if (s.equals("voltage")) return "voltage";
+    if (s.equals("reactivePower")) return "kvar";
+    if (s.equals("timeScheduled")) return "time";
+    if (s.equals("powerFactor")) return "pf";
+    if (s.equals("userDefined")) return "time"; // i.e. unsupported in CIM
+		return "time";
+	}
 
   static double SafeDouble (Resource r, Property p, double def) {
     if (r.hasProperty(p)) return r.getProperty(p).getDouble();
@@ -40,6 +82,23 @@ public class CDPSM_to_DSS extends Object {
     if (r.hasProperty(p)) return r.getProperty(p).getInt();
     return def;
   }
+
+	static boolean SafeBoolean (Resource r, Property p, boolean def) {
+		if (r.hasProperty(p)) return r.getProperty(p).getString().equals("true");
+		return def;
+	}
+
+	static String GetEquipmentType (Resource r) {
+		// TODO: .listRDFTypes() might be more robust
+		String s = r.as(OntResource.class).getRDFType().toString();
+		int hash = s.lastIndexOf ("#");
+		String t = s.substring (hash + 1);
+		if (t.equals("LinearShuntCompensator")) return "capacitor";
+		if (t.equals("ACLineSegment")) return "line";
+		if (t.equals("EnergyConsumer")) return "load";
+		if (t.equals("PowerTransformer")) return "transformer";
+		return "##UNKNOWN##";
+	}
 
   static String DSS_Guid (String arg) {
     int hash = arg.lastIndexOf ("#_");
@@ -90,7 +149,7 @@ public class CDPSM_to_DSS extends Object {
     return seq;
   }
 
-  static String GetACLineParameters (Model mdl, Resource r, double len) {
+  static String GetACLineParameters (Model mdl, Resource r, double len, double freq) {
     Property ptR1 = mdl.getProperty (nsCIM, "ACLineSegment.r");
     Property ptR0 = mdl.getProperty (nsCIM, "ACLineSegment.r0");
     Property ptX1 = mdl.getProperty (nsCIM, "ACLineSegment.x");
@@ -103,12 +162,12 @@ public class CDPSM_to_DSS extends Object {
       double r0 = SafeDouble (r, ptR0, 0) / len;
       double x1 = SafeDouble (r, ptX1, 0) / len;
       double x0 = SafeDouble (r, ptX0, x1) / len;
-      double b0 = SafeDouble (r, ptB0, 0) / len; // EdF writes b0ch but not bch
+      double b0 = SafeDouble (r, ptB0, 0) / len;
       double b1 = SafeDouble (r, ptB1, b0) / len;
-      double c0 = 1.0e9 * b0 / 314.159; // EdF 50-Hz
-      double c1 = 1.0e9 * b1 / 314.159; // EdF 50-Hz
-      return " r1=" + Double.toString(r1) + " x1=" + Double.toString(x1) + " c1=" + Double.toString(c1) +
-             " r0=" + Double.toString(r1) + " x0=" + Double.toString(r1) + " c0=" + Double.toString(c0);
+      double c0 = 1.0e9 * b0 / freq / 2.0 / Math.PI;
+      double c1 = 1.0e9 * b1 / freq / 2.0 / Math.PI;
+      return " r1=" + String.format("%6g", r1) + " x1=" + String.format("%6g", x1) + " c1=" + String.format("%6g", c1) +
+             " r0=" + String.format("%6g", r0) + " x0=" + String.format("%6g", x0) + " c0=" + String.format("%6g", c0);
     }
     return "";
   }
@@ -164,9 +223,9 @@ public class CDPSM_to_DSS extends Object {
     for (i = 0; i < nphases; i++) {  // lower triangular, go across the rows for OpenDSS
       for (j = 0; j <= i; j++) {
         seq = GetMatIdx (nphases, i, j);
-        rBuf.append (Double.toString (rMat[seq]) + " ");
-        xBuf.append (Double.toString (xMat[seq]) + " ");
-        cBuf.append (Double.toString (cMat[seq]) + " ");
+        rBuf.append (String.format("%6g", rMat[seq]) + " ");
+        xBuf.append (String.format("%6g", xMat[seq]) + " ");
+        cBuf.append (String.format("%6g", cMat[seq]) + " ");
       }
       if ((i+1) < nphases) {
         rBuf.append ("| ");
@@ -192,18 +251,6 @@ public class CDPSM_to_DSS extends Object {
     return arg.substring (hash + 17);
   }
 
-  static String Phase_Conn (String arg) {
-    String phs = Phase_String (arg);
-    if (phs.contains("N")) {
-      return "w";
-    }
-    int cnt = phs.length();
-    if (cnt == 2) {
-      return "d";
-    }
-    return "w";
-  }
-
   static int Phase_xCount (String phs, boolean shunt) {
     if (phs.equals ("N")) {
       return 3;
@@ -211,24 +258,27 @@ public class CDPSM_to_DSS extends Object {
     int cnt = phs.length();
     if (phs.contains ("N")) {
       --cnt;
-    } else if (shunt == true) { // shunt without N ==> delta, either 1 or 3 phases
-      if (cnt == 2) {
+    } else if (shunt == true) { // shunt on the primary without N ==> delta, either 1 or 3 phases
+      if ((cnt == 2) && !phs.contains ("1") && !phs.contains ("2")) {
         cnt = 1;
       }
     }
     return cnt;
   }
 
-  static int Phase_Count (String arg, boolean shunt) {
-    String phs = Phase_String (arg);
-    return Phase_xCount (phs, shunt);
-  }
+	static String FirstPhase (String phs) {
+		if (phs.contains ("A")) return "1";
+		if (phs.contains ("B")) return "2";
+		return "3";
+	}
 
   static String Bus_xPhases (String phs) {
     if (phs.contains ("ABC")) {
       return ".1.2.3";
     } else if (phs.contains ("AB")) {
       return ".1.2";
+		} else if (phs.contains ("12")) {
+			return ".1.2";
     } else if (phs.contains ("AC")) {
       return ".1.3";
     } else if (phs.contains ("BC")) {
@@ -239,22 +289,72 @@ public class CDPSM_to_DSS extends Object {
       return ".2";
     } else if (phs.contains ("C")) {
       return ".3";
+		} else if (phs.contains ("1")) {
+			return ".1";
+		} else if (phs.contains ("2")) {
+			return ".2";
     } else {
       return "";  // defaults to 3 phases
     }
   }
+
+	static String Bus_xfmrPhases (String arg) {
+		if (arg.contains("s2")) return (".0.2");
+		if (arg.contains("s1")) return (".1.0");
+		return Bus_xPhases (arg);
+	}
 
   static String Bus_Phases (String arg) {
     String phs = Phase_String (arg);
     return Bus_xPhases(phs);
   }
 
-  static String ACLinePhases (Model mdl, Resource r, Property p1, Property p2) {
+	static String Bus_ShuntPhases (String phs, int phs_cnt, String phs_conn) {
+		if (phs_cnt == 3) {
+			return ".1.2.3";
+		}
+		if (phs_conn.contains("w") || phs.contains("1") || phs.contains("2")) {
+			return Bus_xPhases(phs);
+		}
+		if (phs_cnt == 1) {
+			if (phs.contains ("A")) {
+				return ".1.2";
+			} else if (phs.contains ("B")) {
+				return ".2.3";
+			} else if (phs.contains ("C")) {
+				return ".3.1";
+			}
+		}
+		if (phs.contains ("AB")) {
+			return ".1.2.3";
+		} else if (phs.contains ("AC")) {
+			return ".3.1.2";
+		}
+		// phs.contains ("BC")) for 2-phase delta
+		return ".2.3.1";
+	}
+
+	static String Shunt_Conn (Resource r, Property p) {
+		if (r.hasProperty(p)) {
+			String arg = r.getProperty(p).getObject().toString();
+			int hash = arg.lastIndexOf ("#PhaseShuntConnectionKind.");
+			String conn = arg.substring (hash + 26);
+			if (conn.contains ("D")) {
+				return "d";
+			}
+		}
+		return "w";
+	}
+
+  static String WirePhases (Model mdl, Resource r, Property p1, Property p2) {
     ResIterator it = mdl.listResourcesWithProperty (p1, r);
     if (it.hasNext()) {  // we don't know what order the phases will come
       boolean bA = false;
       boolean bB = false;
       boolean bC = false;
+			boolean bN = false;
+			boolean b1 = false;
+			boolean b2 = false;
       while (it.hasNext()) {
         Resource rP = it.nextResource();
         if (rP.hasProperty(p2)) {
@@ -262,43 +362,53 @@ public class CDPSM_to_DSS extends Object {
           if (s.equals("A")) bA = true;
           if (s.equals("B")) bB = true;
           if (s.equals("C")) bC = true;
+					if (s.equals("N")) bN = true;
+					if (s.equals("s1")) b1 = true;
+					if (s.equals("s2")) b2 = true;
         }
       }
       StringBuilder buf = new StringBuilder ("");
       if (bA) buf.append ("A");
       if (bB) buf.append ("B");
       if (bC) buf.append ("C");
+			if (b1) buf.append ("1");
+			if (b2) buf.append ("2");
+			if (bN) buf.append ("N");
       return buf.toString();
     }
     return "ABC";
   }
 
+	static int Count_xPhases (String phs) {
+		if (phs.contains ("ABC")) {
+			return 3;
+		} else if (phs.contains ("AB")) {
+			return 2;
+		} else if (phs.contains ("AC")) {
+			return 2;
+		} else if (phs.contains ("BC")) {
+			return 2;
+		} else if (phs.contains ("A")) {
+			return 1;
+		} else if (phs.contains ("B")) {
+			return 1;
+		} else if (phs.contains ("C")) {
+			return 1;
+		} else {
+			return 3;  // defaults to 3 phases
+		}
+	}
+
   static int Count_Phases (String arg) {
     String phs = Phase_String (arg);
-    if (phs.contains ("ABC")) {
-      return 3;
-    } else if (phs.contains ("AB")) {
-      return 2;
-    } else if (phs.contains ("AC")) {
-      return 2;
-    } else if (phs.contains ("BC")) {
-      return 2;
-    } else if (phs.contains ("A")) {
-      return 1;
-    } else if (phs.contains ("B")) {
-      return 1;
-    } else if (phs.contains ("C")) {
-      return 1;
-    } else {
-      return 3;  // defaults to 3 phases
-    }
+		return Count_xPhases (arg);
   }
 
   static String GetWdgConnection (Resource r, Property p, String def) {
     if (r.hasProperty(p)) {
       String arg = r.getProperty(p).getObject().toString();
       int hash = arg.lastIndexOf ("#WindingConnection.");
-      return arg.substring (hash + 19);  // TODO - change Y to W
+      return arg.substring (hash + 19);    // D, Y, Z, Yn, Zn, A, I
     }
     return def;
   }
@@ -381,130 +491,66 @@ public class CDPSM_to_DSS extends Object {
     return "x";
   }
 
-  static String GetPowerTransformerData (Model mdl, String xf_id) {
-    // used to collect the PowerTransformerEnds belonging to xf_id
-    Property ptXfmr = mdl.getProperty (nsCIM, "PowerTransformerEnd.PowerTransformer");
+  static String GetPowerTransformerData (Model mdl, String xf_id, double smult, double vmult) {
 
-    // navigate from PowerTransformer via AssetDatasheet to PowerTransformerInfo
-    // then TransformerTankInfo back-references to that PowerTransformerInfo
-    //   and TransformerTankInfo (plural) back-reference to the TransformerTankInfo
-    // TODO - core Y and mesh Z option if there is no datasheet
-
-    Property ptData = mdl.getProperty (nsCIM, "PowerSystemResource.AssetDatasheet");
-    Property ptInf1 = mdl.getProperty (nsCIM, "TransformerTankInfo.PowerTransformerInfo");
-    Property ptInf2 = mdl.getProperty (nsCIM, "TransformerEndInfo.TransformerTankInfo");
-
-    Property ptEndG = mdl.getProperty (nsCIM, "PowerTransformerEnd.g");
-    Property ptEndB = mdl.getProperty (nsCIM, "PowerTransformerEnd.b");
-    Property ptEndR = mdl.getProperty (nsCIM, "PowerTransformerEnd.r");
-    Property ptEndX = mdl.getProperty (nsCIM, "PowerTransformerEnd.x");
+		// used to collect the PowerTransformerEnds belonging to xf_id
+		Property ptXfmr = mdl.getProperty (nsCIM, "PowerTransformerEnd.PowerTransformer");
+		// PowerTransformerEnd instance data0
+    Property ptEndRw = mdl.getProperty (nsCIM, "PowerTransformerEnd.r");
     Property ptEndC = mdl.getProperty (nsCIM, "PowerTransformerEnd.connectionKind");
-    Property ptEndV = mdl.getProperty (nsCIM, "PowerTransformerEnd.ratedU");
+//		Property ptEndK = mdl.getProperty (nsCIM, "PowerTransformerEnd.phaseAngleClock");
+
+		Property ptEndV = mdl.getProperty (nsCIM, "PowerTransformerEnd.ratedU");
     Property ptEndS = mdl.getProperty (nsCIM, "PowerTransformerEnd.ratedS");
-    Property ptEndGrnd = mdl.getProperty (nsCIM, "TransformerEnd.grounded");
+		Property ptEndGrnd = mdl.getProperty (nsCIM, "TransformerEnd.grounded");
     Property ptEndRn   = mdl.getProperty (nsCIM, "TransformerEnd.rground");
     Property ptEndXn   = mdl.getProperty (nsCIM, "TransformerEnd.xground");
     Property ptEndN    = mdl.getProperty (nsCIM, "TransformerEnd.endNumber");
 
-    Property ptInfR = mdl.getProperty (nsCIM, "TransformerEndInfo.r");
-    Property ptInfN = mdl.getProperty (nsCIM, "TransformerEndInfo.endNumber");
-    Property ptInfC = mdl.getProperty (nsCIM, "TransformerEndInfo.connectionKind");
-    Property ptInfV = mdl.getProperty (nsCIM, "TransformerEndInfo.ratedU");
-    Property ptInfS = mdl.getProperty (nsCIM, "TransformerEndInfo.ratedS");
-
     Resource rXf = mdl.getResource (xf_id);
 
     // first count the number of windings
-    ResIterator itTank, itEnd;
-    Resource rDS, rEnd, rTank;
+    ResIterator itEnd;
+    Resource rEnd;
     int i, nwdg = 0;
     itEnd = mdl.listResourcesWithProperty (ptXfmr, rXf);
     while (itEnd.hasNext()) {
       ++nwdg;
       itEnd.nextResource();
     }
-    double v[] = new double[nwdg];
-    double s[] = new double[nwdg];
-    double r[] = new double[nwdg];
-    double x[] = new double[nwdg];
-    double zb[] = new double[nwdg];
-    double g[] = new double[nwdg];
-    double b[] = new double[nwdg];
-    double rn[] = new double[nwdg];
-    double xn[] = new double[nwdg];
-    String wye[] = new String[nwdg];
-    for (i = 0; i < nwdg; i++) {
-      v[i] = 1.0;
-      s[i] = 1.0;
-      r[i] = 0.0;
-      x[i] = 0.01;
-      zb[i] = 1.0;
-      g[i] = 0.0;
-      b[i] = 0.0;
-      rn[i] = 0.0;
-      xn[i] = 0.0;
-      wye[i] = "W";
-    }
 
-    // get the available datasheet values first
-    if (rXf.hasProperty(ptData)) { 
-      rDS = rXf.getProperty(ptData).getResource();
-      itTank = mdl.listResourcesWithProperty (ptInf1, rDS);
-      while (itTank.hasNext()) {
-        rTank = itTank.nextResource();
-        itEnd = mdl.listResourcesWithProperty (ptInf2, rTank);
-        while (itEnd.hasNext()) {
-          rEnd = itEnd.nextResource();
-          if (rEnd.hasProperty(ptInfN)) {
-            i = rEnd.getProperty(ptInfN).getInt() - 1;
-            v[i] = SafeDouble (rEnd, ptInfV, v[i]);
-            s[i] = SafeDouble (rEnd, ptInfS, s[i]);
-            r[i] = SafeDouble (rEnd, ptInfR, r[i]);
-            wye[i] = GetWdgConnection (rEnd, ptInfC, wye[i]);
-          }
-        }
-      }
-    }
-
-    // now go through the PowerTransformerEnds and back-fill / over-write the asset data
+		// now go through the PowerTransformerEnds; we can only deal with two or three
+		double v[] = new double[nwdg];
+		double s[] = new double[nwdg];
+		double zb[] = new double[nwdg];
+		double rw[] = new double[nwdg];
+		double rn[] = new double[nwdg];
+		double xn[] = new double[nwdg];
+		String wye[] = new String[nwdg];
+		Resource rEnds[] = new Resource[nwdg];
     itEnd = mdl.listResourcesWithProperty (ptXfmr, rXf);
     while (itEnd.hasNext()) {
       rEnd = itEnd.nextResource();
       i = SafeInt (rEnd, ptEndN, 1) - 1;
-      v[i] = SafeDouble (rEnd, ptEndV, v[i]);
-      s[i] = SafeDouble (rEnd, ptEndS, s[i]);
-      r[i] = SafeDouble (rEnd, ptEndR, r[i]);
-      x[i] = SafeDouble (rEnd, ptEndX, x[i]);
-      g[i] = SafeDouble (rEnd, ptEndG, g[i]);
-      b[i] = SafeDouble (rEnd, ptEndB, b[i]);
-      rn[i] = SafeDouble (rEnd, ptEndRn, rn[i]);
-      xn[i] = SafeDouble (rEnd, ptEndXn, xn[i]);
-      wye[i] = GetWdgConnection (rEnd, ptEndC, wye[i]);
+      v[i] = vmult * SafeDouble (rEnd, ptEndV, 1.0 / vmult); // kv
+      s[i] = smult * SafeDouble (rEnd, ptEndS, 1.0 / smult); // kva
+			zb[i] = 1000.0 * v[i] * v[i] / s[i];
+			rw[i] = 100.0 * SafeDouble (rEnd, ptEndRw, 0.0) / zb[i];
+      rn[i] = SafeDouble (rEnd, ptEndRn, 0.0);
+      xn[i] = SafeDouble (rEnd, ptEndXn, 0.0);
+      wye[i] = GetWdgConnection (rEnd, ptEndC, "Y");
+			rEnds[i] = rEnd; // save to construct the impedance data
     }
 
     StringBuilder bufU = new StringBuilder (" kvs=[");
     StringBuilder bufS = new StringBuilder (" kvas=[");
     StringBuilder bufC = new StringBuilder (" conns=[");
     StringBuilder bufR = new StringBuilder (" %Rs=[");
-    double maxB = 0.0;
-    double maxG = 0.0;
 
     for (i = 0; i < nwdg; i++) {
-      s[i] = s[i] * 1000.0; // EdF uses MVA
-      zb[i] = 1000.0 * v[i] * v[i] / s[i];
-      r[i] = 100.0 * r[i] / zb[i]; // percent R, X, G, B
-      x[i] = 100.0 * x[i] / zb[i];
-      g[i] = 100.0 * g[i] * zb[i];
-      b[i] = 100.0 * b[i] * zb[i];
-      if (g[i] > maxG) {
-        maxG = g[i];
-      }
-      if (b[i] > maxB) {
-        maxB = b[i];
-      }
-      String U = Double.toString(v[i]);
-      String S = Double.toString(s[i]);
-      String R = Double.toString(r[i]);
+      String U = String.format("%6g", v[i]);
+      String S = String.format("%6g", s[i]);
+      String R = String.format("%6g", rw[i]);
 
       if (i < nwdg - 1) {
         bufU.append (U + ",");
@@ -518,11 +564,40 @@ public class CDPSM_to_DSS extends Object {
         bufR.append (R + "]");
       }
     }
-    StringBuilder bufX = new StringBuilder (" %imag=" + Double.toString(maxB) + " %noloadloss=" + Double.toString(maxG));
-    bufX.append (" Xhl=" + Double.toString(x[0]+x[1]));
+
+		// find the Xhl, Xht, Xlt, and core values from TransformerMeshImpedance, TransformerCoreAdmittance
+		Property ptFrom = mdl.getProperty (nsCIM, "TransformerMeshImpedance.FromTransformerEnd");
+		Property ptTo = mdl.getProperty (nsCIM, "TransformerMeshImpedance.ToTransformerEnd");
+		Property ptMeshX = mdl.getProperty (nsCIM, "TransformerMeshImpedance.x");
+		Property ptCoreB = mdl.getProperty (nsCIM, "TransformerCoreAdmittance.b");  // TODO
+		Property ptCoreG = mdl.getProperty (nsCIM, "TransformerCoreAdmittance.g");
+		Resource rMesh, rCore, rTo;
+		double x;
+
+    StringBuilder bufX = new StringBuilder (" %imag=" + String.format("%6g", 0.0) + " %noloadloss=" + String.format("%6g", 0.0));
+		itEnd = mdl.listResourcesWithProperty (ptFrom, rEnds[0]);
+		while (itEnd.hasNext()) {
+			rMesh = itEnd.nextResource();
+			rTo = rMesh.getProperty(ptTo).getResource();
+			x = 100.0 * SafeDouble(rMesh, ptMeshX, 1.0) / zb[0];
+			if (rTo.equals (rEnds[1]))	{
+				bufX.append(" Xhl=" + String.format("%6g", x));
+			} else {
+				bufX.append(" Xht=" + String.format("%6g", x));
+			}
+		}
     if (nwdg > 2) { // TODO - more than 3 windings
-      bufX.append (" Xht=" + Double.toString(x[0]+x[2]));
-      bufX.append (" Xlt=" + Double.toString(x[1]+x[2]));
+			itEnd = mdl.listResourcesWithProperty (ptFrom, rEnds[1]);
+			while (itEnd.hasNext()) {
+				rMesh = itEnd.nextResource();
+				rTo = rMesh.getProperty(ptTo).getResource();
+				x = 100.0 * SafeDouble(rMesh, ptMeshX, 1.0) / zb[1];
+				if (rTo.equals (rEnds[2]))	{
+					bufX.append(" Xlt=" + String.format("%6g", x));
+				} else {
+					bufX.append(" ***** too many windings *****" + String.format("%6g", x));
+				}
+			}
     }
     return " phases=3 windings=" + Integer.toString(nwdg) + bufX + bufU + bufS + bufC + bufR;
   }
@@ -531,7 +606,7 @@ public class CDPSM_to_DSS extends Object {
     Property ptXfmr = mdl.getProperty (nsCIM, "PowerTransformerEnd.PowerTransformer");
     Property ptEnd = mdl.getProperty (nsCIM, "TransformerEnd.endNumber");
     Property ptTerm = mdl.getProperty (nsCIM, "TransformerEnd.Terminal");
-    Property ptPhs = mdl.getProperty (nsCIM, "ConductingEquipment.phases");
+    Property ptPhs = mdl.getProperty (nsCIM, "ConductingEquipment.phases"); // TODO - not there any longer
     Property ptNode = mdl.getProperty (nsCIM, "Terminal.ConnectivityNode");
     Property ptName = mdl.getProperty (nsCIM, "IdentifiedObject.name");
 
@@ -553,7 +628,7 @@ public class CDPSM_to_DSS extends Object {
       Resource wdg = it.nextResource();
       i = SafeInt (wdg, ptEnd, 1) - 1;
       Resource trm = wdg.getProperty(ptTerm).getResource();
-      phs[i] = SafePhases (trm, ptPhs);
+      phs[i] = SafePhasesX (trm, ptPhs);
       Resource CN = trm.getProperty(ptNode).getResource();
       if (CN.hasProperty(ptName)) {
         bus[i] = DSS_Name (CN.getProperty(ptName).getString());
@@ -575,7 +650,7 @@ public class CDPSM_to_DSS extends Object {
     return buf.toString();
   }
 
-  static String GetTankBusesAndPhaseCount (Model mdl, Resource xfRes) {
+  static String GetTankBusesAndPhaseCount (Model mdl, Resource xfRes, boolean bXfmrCode) {
     Property ptXfmr = mdl.getProperty (nsCIM, "TransformerTankEnd.TransformerTank");
     Property ptEnd = mdl.getProperty (nsCIM, "TransformerEnd.endNumber");
     Property ptTerm = mdl.getProperty (nsCIM, "TransformerEnd.Terminal");
@@ -601,8 +676,8 @@ public class CDPSM_to_DSS extends Object {
       Resource wdg = it.nextResource();
       i = SafeInt (wdg, ptEnd, 1) - 1;
       Resource trm = wdg.getProperty(ptTerm).getResource();
-      phs[i] = SafePhases (wdg, ptPhs);
-      n = Count_Phases (phs[i]);
+      phs[i] = Phase_String (SafePhasesX (wdg, ptPhs));
+      n = Count_xPhases (phs[i]);
       if (n < nphase) {
         nphase = n;
       }
@@ -614,47 +689,171 @@ public class CDPSM_to_DSS extends Object {
       }
     }
 
-    StringBuilder buf = new StringBuilder (" windings=" + Integer.toString(nwdg) 
-                                           + " phases=" + Integer.toString(nphase) + " buses=[");
+		StringBuilder buf;
+		if (bXfmrCode) {
+			buf = new StringBuilder(" buses=[");
+		} else {
+			buf = new StringBuilder(" windings=" + Integer.toString(nwdg)
+																						 + " phases=" + Integer.toString(nphase) + " buses=[");
+		}
     for (i = 0; i < nwdg; i++) {
       buf.append (bus[i]);
-      buf.append (Bus_Phases (phs[i]));
+      buf.append (Bus_xfmrPhases (phs[i]));
       if (i < nwdg-1) {
         buf.append (",");
       } else {
         buf.append ("]");
       }
     }
-    return buf.toString();
+		buf.append (" //");
+		for (i = 0; i < nwdg; i++) buf.append (" " + phs[i]);
+		return buf.toString();
   }
+
+	static String GetTankBusesAndXfmrCode (Model mdl, Resource rTank, Resource rDS) {
+		Property ptName = mdl.getProperty (nsCIM, "IdentifiedObject.name");
+		String xfName = mdl.getProperty(rDS,ptName).getString();
+		StringBuilder buf = new StringBuilder (" xfmrcode=" + xfName);
+
+		buf.append (GetTankBusesAndPhaseCount (mdl, rTank, true));
+
+		return buf.toString();
+	}
+
+	// needs to return the spacing and wire/cncable/tscable assignments for this rLine
+	static String GetLineSpacing (Model mdl, Resource rLine) {
+		StringBuilder buf = new StringBuilder (" spacing=");
+		Property ptAssetPSR = mdl.getProperty (nsCIM, "Asset.PowerSystemResources");
+		Property ptAssetInf = mdl.getProperty (nsCIM, "Asset.AssetInfo");
+		Property ptName = mdl.getProperty (nsCIM, "IdentifiedObject.name");
+		ResIterator itAsset = mdl.listResourcesWithProperty (ptAssetPSR, rLine);
+		int nconds = 0;
+		int nphases = 0;
+		boolean bCNcables = false;
+		boolean bTScables = false;
+		String wsName = "";
+		String wireName = "";  // attached to the ACLineSegment (i.e. for all phases)
+		while (itAsset.hasNext()) {
+			Resource rAsset = itAsset.nextResource();
+			if (rAsset.hasProperty(ptAssetInf)) {
+				Resource rDS = rAsset.getProperty(ptAssetInf).getResource();
+				// TODO: .listRDFTypes() might be more robust
+				String s = rDS.as(OntResource.class).getRDFType().toString();
+				int hash = s.lastIndexOf ("#");
+				String t = s.substring (hash + 1);
+				if (t.equals("WireSpacingInfo")) {
+					wsName = SafeResName (rDS, ptName);
+					buf.append (wsName);
+					SpacingCount spc = mapSpacings.get(wsName);
+					nconds = spc.getNumConductors();
+					nphases = spc.getNumPhases();
+				} else if (t.equals("OverheadWireInfo")) {
+					wireName = SafeResName (rDS, ptName);
+				} else if (t.equals("ConcentricNeutralCableInfo")) {
+					bCNcables = true;
+					wireName = SafeResName (rDS, ptName);
+				} else if (t.equals("TapeShieldCableInfo")) {
+					bTScables = true;
+					wireName = SafeResName (rDS, ptName);
+				}
+			}
+		}
+		if (nconds > 0) { // find all the wires by phase for individual assignments
+			Property ptSegment = mdl.getProperty (nsCIM, "ACLineSegmentPhase.ACLineSegment");
+			Property ptPhase = mdl.getProperty (nsCIM, "ACLineSegmentPhase.phase");
+			ResIterator it = mdl.listResourcesWithProperty (ptSegment, rLine);
+			String wA = "", wB = "", wC = "", wN = "", wS1 = "", wS2 = "", wS = "";
+			while (it.hasNext()) {  // we don't know what order the phases will come
+				Resource rP = it.nextResource();
+				if (rP.hasProperty(ptPhase)) {
+					String sPhase = Phase_Kind_String (rP.getProperty(ptPhase).getObject().toString());
+					itAsset = mdl.listResourcesWithProperty (ptAssetPSR, rP);
+					while (itAsset.hasNext()) {
+						Resource rAsset = itAsset.nextResource();
+						if (rAsset.hasProperty(ptAssetInf)) {
+							Resource rDS = rAsset.getProperty(ptAssetInf).getResource();
+							String s = rDS.as(OntResource.class).getRDFType().toString();
+							int hash = s.lastIndexOf ("#");
+							String t = s.substring (hash + 1);
+							if (t.equals("ConcentricNeutralCableInfo")) bCNcables = true;
+							if (t.equals("TapeShieldCableInfo")) bTScables = true;
+							wS = SafeResName(rDS, ptName); // if not "", indicates we found at least one wire/cable assigned to a phase
+							if (sPhase.equals("A")) wA = wS;
+							if (sPhase.equals("B")) wB = wS;
+							if (sPhase.equals("C")) wC = wS;
+							if (sPhase.equals("N")) wN = wS;
+							if (sPhase.equals("s1")) wS1 = wS;
+							if (sPhase.equals("s2")) wS2 = wS;
+						}
+					}
+				}
+			}
+			if (wS.length() < 1) { // no individual phase conductors were found
+				if (bCNcables) {
+					buf.append(" CNcables=[");
+				} else if (bTScables) {
+					buf.append(" TScables=[");
+				} else {
+					buf.append(" wires=[");
+				}
+				for (int i = 0; i < nconds; i++) buf.append(wireName + " ");
+				buf.append("]");
+			} else {
+				if (bCNcables) {
+					buf.append(" CNcables=[");
+				} else if (bTScables) {
+					buf.append(" TScables=[");
+				} else {
+					buf.append(" wires=[");
+				}
+				if (wA.length() > 0) buf.append (wA + " ");
+				if (wB.length() > 0) buf.append (wB + " ");
+				if (wC.length() > 0) buf.append (wC + " ");
+				if (wS1.length() > 0) buf.append (wS1 + " ");
+				if (wS2.length() > 0) buf.append (wS2 + " ");
+				if (!(bCNcables || bTScables)) { // write any overhead neutrals
+					for (int i = 0; i < (nconds - nphases); i++) buf.append(wN + " ");
+				}
+				buf.append("]");
+				if ((nconds > nphases) && (bCNcables || bTScables)) { // separate underground neutrals are actually bare wires
+					buf.append(" wires=[");
+					for (int i = 0; i < (nconds - nphases); i++) buf.append(wN + " ");
+					buf.append("]");
+				}
+			}
+			return buf.toString();
+		}
+		return "";
+	}
 
   static String GetTankData (Model mdl, Resource rTank, double smult, double vmult) {
     // used to collect the TransformerTankEnds belonging to rTank
     Property ptXfmr = mdl.getProperty (nsCIM, "TransformerTankEnd.TransformerTank");
 
-    // navigate from PowerTransformer via AssetDatasheet to PowerTransformerInfo
-    // then TransformerTankInfo back-references to that PowerTransformerInfo
-    //   and TransformerTankInfo (plural) back-reference to the TransformerTankInfo
     // TODO - core Y and mesh Z option if there is no datasheet
     // TODO - parse the ShortCircuitTest and NoLoadTest data if available
 
-//    Property ptData = mdl.getProperty (nsCIM, "PowerSystemResource.AssetDatasheet");
-    Property ptInf1 = mdl.getProperty (nsCIM, "TransformerTankInfo.PowerTransformerInfo");
+		// navigate from TransformerTank via AssetDatasheet to TransformerTankInfo,
+		// then collect its TransformerEndInfos, ShortCircuitTests and NoLoadTests
+		Property ptAssetPSR = mdl.getProperty (nsCIM, "Asset.PowerSystemResources");
+		Property ptAssetInf = mdl.getProperty (nsCIM, "Asset.AssetInfo");
+//    Property ptInf1 = mdl.getProperty (nsCIM, "TransformerTank.TransformerTankInfo");
     Property ptInf2 = mdl.getProperty (nsCIM, "TransformerEndInfo.TransformerTankInfo");
-
-    Property ptAssetPSR = mdl.getProperty (nsCIM, "Asset.PowerSystemResources");
-    Property ptAssetInf = mdl.getProperty (nsCIM, "Asset.AssetInfo");
 
     Property ptEndGrnd = mdl.getProperty (nsCIM, "TransformerEnd.grounded");
     Property ptEndRn   = mdl.getProperty (nsCIM, "TransformerEnd.rground");
     Property ptEndXn   = mdl.getProperty (nsCIM, "TransformerEnd.xground");
     Property ptEndN    = mdl.getProperty (nsCIM, "TransformerEnd.endNumber");
+		Property ptEndV    = mdl.getProperty (nsCIM, "TransformerEnd.BaseVoltage");
 
     Property ptInfR = mdl.getProperty (nsCIM, "TransformerEndInfo.r");
     Property ptInfN = mdl.getProperty (nsCIM, "TransformerEndInfo.endNumber");
     Property ptInfC = mdl.getProperty (nsCIM, "TransformerEndInfo.connectionKind");
+		Property ptEndK = mdl.getProperty (nsCIM, "TransformerEndInfo.phaseAngleClock");
     Property ptInfV = mdl.getProperty (nsCIM, "TransformerEndInfo.ratedU");
     Property ptInfS = mdl.getProperty (nsCIM, "TransformerEndInfo.ratedS");
+		Property ptInfS1 = mdl.getProperty (nsCIM, "TransformerEndInfo.shortTermS");
+		Property ptInfS2 = mdl.getProperty (nsCIM, "TransformerEndInfo.emergencyS");
 
     // first count the number of windings
     ResIterator itEnd;
@@ -688,7 +887,7 @@ public class CDPSM_to_DSS extends Object {
       wye[i] = "W";
     }
 
-    // get the available datasheet values first - TODO, what if it's on the PowerXfmr only, not the tank?
+    // get the available datasheet values first - must be on the tank
     ResIterator itAsset = mdl.listResourcesWithProperty (ptAssetPSR, rTank);
     while (itAsset.hasNext()) {
       Resource rAsset = itAsset.nextResource();
@@ -738,9 +937,9 @@ public class CDPSM_to_DSS extends Object {
       if (b[i] > maxB) {
         maxB = b[i];
       }
-      String U = Double.toString(v[i]);
-      String S = Double.toString(s[i]);
-      String R = Double.toString(r[i]);
+      String U = String.format("%6g", v[i]);
+      String S = String.format("%6g", s[i]);
+      String R = String.format("%6g", r[i]);
 
       if (i < nwdg - 1) {
         bufU.append (U + ",");
@@ -754,11 +953,11 @@ public class CDPSM_to_DSS extends Object {
         bufR.append (R + "]");
       }
     }
-    StringBuilder bufX = new StringBuilder (" %imag=" + Double.toString(maxB) + " %noloadloss=" + Double.toString(maxG));
-    bufX.append (" Xhl=" + Double.toString(x[0]+x[1]));
+    StringBuilder bufX = new StringBuilder (" %imag=" + String.format("%6g", maxB) + " %noloadloss=" + String.format("%6g", maxG));
+    bufX.append (" Xhl=" + String.format("%6g", x[0]+x[1]));
     if (nwdg > 2) { // TODO - more than 3 windings
-      bufX.append (" Xht=" + Double.toString(x[0]+x[2]));
-      bufX.append (" Xlt=" + Double.toString(x[1]+x[2]));
+      bufX.append (" Xht=" + String.format("%6g", x[0]+x[2]));
+      bufX.append (" Xlt=" + String.format("%6g", x[1]+x[2]));
     }
     return bufX.toString() + bufU + bufS + bufC + bufR;
   }
@@ -766,137 +965,269 @@ public class CDPSM_to_DSS extends Object {
   static String GetRegulatorData (Model mdl, Resource reg) {
     StringBuffer buf = new StringBuffer("");
 
-    // looking for this WdgInf
-    Property ptWdg = mdl.getProperty (nsCIM, "RatioTapChanger.Winding");
-    Property ptWdgInf = mdl.getProperty (nsCIM, "DistributionTransformerWinding.WindingInfo");
-    // look through all the reg=>wdg=>xf=>XfInfo WdgInfos to match it
-    Property ptXfmr = mdl.getProperty (nsCIM, "DistributionTransformerWinding.Transformer");
-    Property ptCode = mdl.getProperty (nsCIM, "DistributionTransformer.TransformerInfo");
-    Property ptWdgXfInfo = mdl.getProperty (nsCIM, "WindingInfo.TransformerInfo");
+    // looking for the transformer and the winding number
+    Property ptEnd = mdl.getProperty (nsCIM, "RatioTapChanger.TransformerEnd");
+    Property ptWdg = mdl.getProperty (nsCIM, "TransformerEnd.endNumber");
+		Property ptTank = mdl.getProperty (nsCIM, "TransformerTankEnd.TransformerTank");
+		Property ptXf = mdl.getProperty (nsCIM, "TransformerTank.PowerTransformer");
     Property ptName = mdl.getProperty (nsCIM, "IdentifiedObject.name");
-
-    Resource rWdg = mdl.getProperty(reg,ptWdg).getResource();
-    Resource rSeek = mdl.getProperty(rWdg,ptWdgInf).getResource();
-
-    Resource rXf = mdl.getProperty(rWdg,ptXfmr).getResource();
-    String xfName = mdl.getProperty(rXf,ptName).getString();
-
-    Resource rInf = mdl.getProperty(rXf,ptCode).getResource();
-    int nWdg = 0;
-    int idx = 0;
-    ResIterator iter = mdl.listResourcesWithProperty (ptWdgXfInfo, rInf);
-    while (iter.hasNext()) {
-      Resource wi = iter.nextResource();
-      idx = idx + 1;
-      if (wi.equals (rSeek)) {
-        nWdg = idx;
-      }
-    }
-
+		Property ptTap = mdl.getProperty (nsCIM, "TapChanger.step");
+    Resource rEnd = mdl.getProperty(reg,ptEnd).getResource();
+		int nWdg = SafeInt (rEnd, ptWdg, 1);
+		double dTap = SafeDouble(reg, ptTap, 1.0);
+		Resource rTank = mdl.getProperty(rEnd,ptTank).getResource();
+		Resource rXf = mdl.getProperty(rTank,ptXf).getResource();
+    String xfName = mdl.getProperty(rTank,ptName).getString();
     buf.append (" transformer=" + xfName + " winding=" + Integer.toString(nWdg));
 
-    xfName = mdl.getProperty(rInf,ptName).getString();
+		// look up the asset datasheet
+		double CT = 1.0;
+		double PT = 1.0;
+		Property ptAssetPSR = mdl.getProperty (nsCIM, "Asset.PowerSystemResources");
+		Property ptAssetInf = mdl.getProperty (nsCIM, "Asset.AssetInfo");
+		Property ptPT = mdl.getProperty (nsCIM, "TapChangerInfo.ptRatio");
+		Property ptCT = mdl.getProperty (nsCIM, "TapChangerInfo.ctRating");
+		ResIterator itAsset = mdl.listResourcesWithProperty (ptAssetPSR, reg);
+		while (itAsset.hasNext()) {
+			Resource rAsset = itAsset.nextResource();
+			if (rAsset.hasProperty(ptAssetInf)) {
+				Resource rDS = rAsset.getProperty(ptAssetInf).getResource();
+				CT = SafeDouble (rDS, ptCT, 1.0);
+				PT = SafeDouble (rDS, ptPT, 1.0);
+			}
+		}
 
-    // TODO - all the other parameters
-    Property ptBand = mdl.getProperty (nsCIM, "DistributionTapChanger.bandVoltage");
-    Property ptSet = mdl.getProperty (nsCIM, "DistributionTapChanger.targetVoltage");
-    Property ptR = mdl.getProperty (nsCIM, "DistributionTapChanger.lineDropX");
-    Property ptX = mdl.getProperty (nsCIM, "DistributionTapChanger.lineDropR");
-    Property ptPT = mdl.getProperty (nsCIM, "DistributionTapChanger.ptRatio");
-    Property ptCT = mdl.getProperty (nsCIM, "DistributionTapChanger.ctRating");
+    // look up the control parameters TODO - all the others
+		Property ptCtl = mdl.getProperty (nsCIM, "TapChanger.TapChangerControl");
+    Property ptBand = mdl.getProperty (nsCIM, "RegulatingControl.targetDeadband");
+    Property ptSet = mdl.getProperty (nsCIM, "RegulatingControl.targetValue");
+    Property ptR = mdl.getProperty (nsCIM, "TapChangerControl.lineDropR");
+    Property ptX = mdl.getProperty (nsCIM, "TapChangerControl.lineDropX");
+		Resource ctl = mdl.getProperty(reg,ptCtl).getResource();
+    double ldcR = SafeDouble (ctl, ptR, 0.0);
+    double ldcX = SafeDouble (ctl, ptX, 0.0);
+    double Vreg = SafeDouble (ctl, ptSet, 120.0);
+    double Vband = SafeDouble (ctl, ptBand, 2.0);
+//    Vreg /= PT;
+//    Vband /= PT;
 
-    // TODO - pull SvTapStep
-
-    double CT = SafeDouble (reg, ptCT, 1.0);
-    double PT = SafeDouble (reg, ptPT, 1.0);
-    double ldcR = SafeDouble (reg, ptR, 0.0);
-    double ldcX = SafeDouble (reg, ptX, 0.0);
-    double Vreg = SafeDouble (reg, ptSet, 120.0);
-    double Vband = SafeDouble (reg, ptBand, 2.0);
-    Vreg /= PT;
-    Vband /= PT;
-
-    buf.append (" ctprim=" + Double.toString(CT) +
-                " ptratio=" + Double.toString(PT) +
-                " vreg=" + Double.toString(Vreg) +
-                " band=" + Double.toString(Vband) +
-                " r=" + Double.toString(ldcR) +
-                " x=" + Double.toString(ldcX));
+    buf.append (" ctprim=" + String.format("%6g", CT) +
+                " ptratio=" + String.format("%6g", PT) +
+                " vreg=" + String.format("%6g", Vreg) +
+                " band=" + String.format("%6g", Vband) +
+                " r=" + String.format("%6g", ldcR) +
+                " x=" + String.format("%6g", ldcX));
+		buf.append ("\nedit transformer." + xfName + " wdg=" + Integer.toString(nWdg) + " tap=" + String.format("%6g", dTap));
     return buf.toString();
   }
 
-  static String GetXfmrCode (Model mdl, String id) {  // TODO - 2011 instance files don't actually use SC/NL tests
+	static String GetWireData (Model mdl, Resource res) {
+		StringBuffer buf = new StringBuffer("");
+
+		Property ptGMR = mdl.getProperty (nsCIM, "WireInfo.gmr");
+		Property ptWireRadius = mdl.getProperty (nsCIM, "WireInfo.radius");
+		Property ptWireDiameter = mdl.getProperty (nsCIM, "WireInfo.diameter");
+		Property ptWireCurrent = mdl.getProperty (nsCIM, "WireInfo.ratedCurrent");
+		Property ptWireR25 = mdl.getProperty (nsCIM, "WireInfo.rAC25");
+		Property ptWireR50 = mdl.getProperty (nsCIM, "WireInfo.rAC50");
+		Property ptWireR75 = mdl.getProperty (nsCIM, "WireInfo.rAC75");
+		Property ptWireRdc = mdl.getProperty (nsCIM, "WireInfo.rDC20");
+
+		double normamps = SafeDouble (res, ptWireCurrent, 0.0);
+		double radius = SafeDouble (res, ptWireRadius, 0.0);
+		if (radius <= 0) {
+			radius = 0.5 * SafeDouble (res, ptWireDiameter, 0.0);
+		}
+		double gmr = SafeDouble (res, ptGMR, 0.0);
+		if (gmr <= 0) {
+			gmr = 0.7788 * radius;
+		}
+		double wireRac = SafeDouble (res, ptWireR50, 0.0);
+		if (wireRac <= 0) {
+			wireRac = SafeDouble (res, ptWireR25, 0.0);
+		}
+		if (wireRac <= 0) {
+			wireRac = SafeDouble (res, ptWireR75, 0.0);
+		}
+		double wireRdc = SafeDouble (res, ptWireRdc, 0.0);
+		if (wireRdc <= 0) {
+			wireRdc = wireRac;
+		} else if (wireRac <= 0) {
+			wireRac = wireRdc;
+		}
+
+		buf.append (" gmr=" + String.format("%6g", gmr) + " radius=" + String.format("%6g", radius) +
+								" rac=" + String.format("%6g", wireRac) + " rdc=" + String.format("%6g", wireRdc) + " normamps=" + String.format("%6g", normamps) + 
+								" Runits=m Radunits=m gmrunits=m");
+		return buf.toString();
+	}
+
+	static String GetCableData (Model mdl, Resource res) {
+		StringBuffer buf = new StringBuffer("");
+
+//		Property ptOverCore = mdl.getProperty (nsCIM, "CableInfo.diameterOverCore"); // redundant
+		Property ptOverIns = mdl.getProperty (nsCIM, "CableInfo.diameterOverInsulation");
+		Property ptOverJacket = mdl.getProperty (nsCIM, "CableInfo.diameterOverJacket");
+		Property ptInsLayer = mdl.getProperty (nsCIM, "WireInfo.insulationThickness");
+
+//		double dCore = SafeDouble (res, ptOverCore, 0.0);
+		double dIns = SafeDouble (res, ptOverIns, 0.0);
+		double dJacket = SafeDouble (res, ptOverJacket, 0.0);
+		double tIns = SafeDouble (res, ptInsLayer, 0.0);
+		double dEps = 2.3; // TODO - how to put this into the CIM
+
+		buf.append ("\n~ EpsR=" + String.format("%6g", dEps) + " Ins=" + String.format("%6g", tIns) +
+								" DiaIns=" + String.format("%6g", dIns) + " DiaCable=" + String.format("%6g", dJacket));
+		return buf.toString();
+	}
+
+	static String GetCapControlData (Model mdl, Resource ctl) {
+		StringBuffer buf = new StringBuffer("");
+
+		// looking for the capacitor to control and terminal to monitor
+		Property ptCap = mdl.getProperty (nsCIM, "RegulatingControl.RegulatingCondEq");
+		Property ptTerm = mdl.getProperty (nsCIM, "RegulatingControl.Terminal");
+		Property ptDiscrete = mdl.getProperty (nsCIM, "RegulatingControl.discrete");
+		Property ptEnabled = mdl.getProperty (nsCIM, "RegulatingControl.enabled");
+		Property ptMode = mdl.getProperty (nsCIM, "RegulatingControl.mode");
+		Property ptPhase = mdl.getProperty (nsCIM, "RegulatingControl.monitoredPhase");
+		Property ptBW = mdl.getProperty (nsCIM, "RegulatingControl.targetDeadband");
+		Property ptVal = mdl.getProperty (nsCIM, "RegulatingControl.targetValue");
+		Property ptMult = mdl.getProperty (nsCIM, "RegulatingControl.targetValueUnitMultiplier");
+		Property ptName = mdl.getProperty (nsCIM, "IdentifiedObject.name");
+		Property ptAVRDelay = mdl.getProperty (nsCIM, "ShuntCompensator.aVRDelay");
+
+		Resource rCap = mdl.getProperty(ctl,ptCap).getResource();
+		String ctlName = SafeResName (ctl, ptName);
+		String capName = SafeResName (rCap, ptName);
+		double delay = SafeDouble (rCap, ptAVRDelay, 10.0);
+		String sPhase = Phase_String (SafePhasesX (ctl, ptPhase));
+		String sMode = SafeRegulatingMode (ctl, ptMode, "voltage");
+		double dBW = SafeDouble(ctl, ptBW, 1.0);
+		double dVal = SafeDouble(ctl, ptVal, 120.0);
+		double dMult = SafeDouble(ctl, ptMult, 1.0);
+		if (sMode.equals("reactivePower")) dMult /= 1000.0; // for kVAR
+		double dOn = dMult * (dVal - 0.5 * dBW);
+		double dOff = dMult * (dVal + 0.5 * dBW);
+		boolean bDiscrete = SafeBoolean (ctl, ptDiscrete, true);
+		boolean bEnabled = SafeBoolean (ctl, ptEnabled, true);  // TODO -check enabled for everything
+
+		// find the monitored element
+		Property ptCondEq = mdl.getProperty (nsCIM, "Terminal.ConductingEquipment");
+		Resource rTerm = mdl.getProperty(ctl,ptTerm).getResource();
+		Resource rCondEq = mdl.getProperty (rTerm,ptCondEq).getResource();
+		String sEqType = GetEquipmentType (rCondEq);
+
+		int nterm = 0;
+		String sMatch = SafeResName (rTerm, ptName);
+		ResIterator iter = mdl.listResourcesWithProperty (ptCondEq, rCondEq);
+		while (iter.hasNext()) {
+			++nterm;
+			Resource r = iter.nextResource();
+			String s = SafeResName (r, ptName);
+			if (s.equals(sMatch)) break;
+		}
+
+		buf.append (" capacitor=" + capName +
+								" type=" + DSSCapMode(sMode) + 
+								" on=" + String.format("%6g", dOn) +
+								" off=" + String.format("%6g", dOff) + 			    
+			    " delay=" + String.format("%6g", delay) + 
+			    " delayoff=" + String.format("%6g", delay) + 
+								" element=" + sEqType + "." + SafeResName (rCondEq, ptName) +
+								" terminal=" + Integer.toString(nterm) + 
+								" ptratio=1 ptphase=" + FirstPhase (sPhase));
+		return buf.toString();
+	}
+
+  static String GetXfmrCode (Model mdl, String id, double smult, double vmult) {  
     Property ptInfo = mdl.getProperty (nsCIM, "TransformerEndInfo.TransformerTankInfo");
+		Property ptN = mdl.getProperty (nsCIM, "TransformerEndInfo.endNumber");
     Property ptU = mdl.getProperty (nsCIM, "TransformerEndInfo.ratedU");
     Property ptS = mdl.getProperty (nsCIM, "TransformerEndInfo.ratedS");
     Property ptR = mdl.getProperty (nsCIM, "TransformerEndInfo.r");
     Property ptC = mdl.getProperty (nsCIM, "TransformerEndInfo.connectionKind");
-    Property ptFrom = mdl.getProperty (nsCIM, "DistributionWindingTest.EnergisedEnd");
-    Property ptType = mdl.getProperty (nsRDF, "type");
-    Property ptTo = mdl.getProperty (nsCIM, "ShortCircuitTest.FromWinding"); // TODO - handle more than 3 windings
-    Property ptNLL = mdl.getProperty (nsCIM, "NoLoadTest.loss");
-    Property ptImag = mdl.getProperty (nsCIM, "OpenCircuitTest.excitingCurrent");
-    Property ptZsc = mdl.getProperty (nsCIM, "ShortCircuitTest.leakageImpedance");
-    StringBuilder bufU = new StringBuilder ("kvs=[");
-    StringBuilder bufS = new StringBuilder ("kvas=[");
-    StringBuilder bufC = new StringBuilder ("conns=[");
-    StringBuilder bufR = new StringBuilder ("%Rs=[");
-    StringBuilder bufOC = new StringBuilder ("");
-    StringBuilder bufSC = new StringBuilder ("");
-    String sPhases = "phases=3 ";
-    int nWindings = 0;
-    int nOffset = nsRDF.length() - 2;
+		Property ptCk = mdl.getProperty (nsCIM, "TransformerEndInfo.phaseAngleClock");
+    Property ptFrom = mdl.getProperty (nsCIM, "ShortCircuitTest.EnergisedEnd");
+    Property ptTo = mdl.getProperty (nsCIM, "ShortCircuitTest.GroundedEnds"); // TODO - this is actually a collection
+		Property ptZsc = mdl.getProperty (nsCIM, "ShortCircuitTest.leakageImpedance");
+    Property ptLL = mdl.getProperty (nsCIM, "ShortCircuitTest.loss");
+		Property ptEnd = mdl.getProperty (nsCIM, "NoLoadTest.EnergisedEnd");
+		Property ptNLL = mdl.getProperty (nsCIM, "NoLoadTest.loss");
+    Property ptImag = mdl.getProperty (nsCIM, "NoLoadTest.excitingCurrent");
 
-    Resource xfRes = mdl.getResource (id);
-    ResIterator iter = mdl.listResourcesWithProperty (ptInfo, xfRes);
+		// count windings and allocate storage
+		int nWindings = 0;
+		int nPhases = 3;
+		Resource xfRes = mdl.getResource (id);
+		ResIterator iter = mdl.listResourcesWithProperty (ptInfo, xfRes);
+		while (iter.hasNext()) {
+			Resource wdg = iter.nextResource();
+			++nWindings;
+		}
+		double dU[] = new double[nWindings];
+		double dS[] = new double[nWindings];
+		double dR[] = new double[nWindings];
+		String sC[] = new String[nWindings];
+		double dNLL = 0.0, dImag = 0.0, dXhl = 0.0, dXlt = 0.0, dXht = 0.0;
+		String sPhases = "phases=3 ";
+
+    iter = mdl.listResourcesWithProperty (ptInfo, xfRes);
     while (iter.hasNext()) {
       Resource wdg = iter.nextResource();
-      ++nWindings;
-      double dU = SafeDouble (wdg, ptU, 1);
-      double dS = SafeDouble (wdg, ptS, 1);
-      double dR = SafeDouble (wdg, ptR, 0);
-      double Zbase = 1000.0 * dU * dU / dS;
-      dR = 100.0 * dR / Zbase;
-      String U = Double.toString(dU);
-      String S = Double.toString(dS);
-      String R = Double.toString(dR);
-      String C = GetWdgConnection (wdg, ptC, "W");
-      if (C.equals ("I")) {
+			int i1 = wdg.getProperty(ptN).getInt() - 1;
+      dU[i1] = vmult * SafeDouble (wdg, ptU, 1);
+      dS[i1] = smult * SafeDouble (wdg, ptS, 1);
+      dR[i1] = SafeDouble (wdg, ptR, 0);
+      double Zbase = 1000.0 * dU[i1] * dU[i1] / dS[i1];
+      dR[i1] = 100.0 * dR[i1] / Zbase;
+      sC[i1] = GetWdgConnection (wdg, ptC, "Y");
+      if (sC[i1].equals ("I")) {
         sPhases = "phases=1 ";
-        C = "W";
+        sC[i1] = "Y";
       }
-      if (iter.hasNext()) {
-        bufU.append (U + ",");
-        bufS.append (S + ",");
-        bufC.append (C + ",");
-        bufR.append (R + ",");
-      } else {
-        bufU.append (U + "] ");
-        bufS.append (S + "] ");
-        bufC.append (C + "] ");
-        bufR.append (R + "] ");
-      }
+			// find the short circuit tests - TODO only for up to 3 windings?
       ResIterator iterTest = mdl.listResourcesWithProperty (ptFrom, wdg);
       while (iterTest.hasNext()) {
         Resource test = iterTest.nextResource();
-        String sType = test.getProperty (ptType).getObject().toString().substring(nOffset);
-        if (sType.equals("NoLoadTest")) {
-          double dNLL = SafeDouble (test, ptNLL, 0);
-          double dImag = SafeDouble (test, ptImag, 0);
-          dNLL = 100 * dNLL / dS;
-          bufOC.append ("%imag=" + Double.toString(dImag) + " %noloadloss=" + Double.toString(dNLL) + " ");
-        } else if (sType.equals("ShortCircuitTest")) {
-          double dXsc = SafeDouble (test, ptZsc, 0.0001);
-          dXsc = 100.0 * dXsc / Zbase;
-          bufSC.append ("Xhl=" + Double.toString(dXsc) + " ");
-        }
-      }
+        double dXsc = SafeDouble (test, ptZsc, 0.0001);
+				Resource wdg2 = mdl.getProperty (test,ptTo).getResource();
+				int i2 = SafeInt (wdg2, ptN, 0) - 1;
+        dXsc = 100.0 * dXsc / Zbase;
+				if ((i1 == 0 && i2 == 1) || (i1 == 1 && i2 == 0))	dXhl = dXsc;
+				if ((i1 == 0 && i2 == 2) || (i1 == 2 && i2 == 0)) dXht = dXsc;
+				if ((i1 == 1 && i2 == 2) || (i1 == 2 && i2 == 1)) dXlt = dXsc;
+			}
+			// find the first no-load test
+			iterTest = mdl.listResourcesWithProperty (ptEnd, wdg);
+			while (iterTest.hasNext()) {
+				Resource test = iterTest.nextResource();
+				dNLL = SafeDouble (test, ptNLL, 0);
+				dImag = SafeDouble (test, ptImag, 0);
+				dNLL = 100 * dNLL / (1000.0 * dS[i1]);
+			}
     }
-    if (bufSC.length() < 1) {
-      bufSC.append ("xhl=1.0 ");
-    }
-    String sWindings = "windings=" + Integer.toString(nWindings) + " ";
-    return sWindings + sPhases + bufSC.toString() + bufOC.toString() + bufU.toString() + bufS.toString() + bufC.toString() + bufR.toString();
+    if (dXhl <= 0.0) dXhl = 1.0;
+
+		// write out the data
+		StringBuilder buf = new StringBuilder ("windings=" + Integer.toString(nWindings) + " " + sPhases);
+		buf.append (" kvas=[");
+		for (int i = 0; i < nWindings; i++) buf.append (String.format("%6g", dS[i]) + " ");
+		buf.append ("]");
+		buf.append(" kvs=[");
+		for (int i = 0; i < nWindings; i++) buf.append (String.format("%6g", dU[i]) + " ");
+		buf.append ("]");
+		buf.append (" conns=[");
+		for (int i = 0; i < nWindings; i++) buf.append (sC[i] + " ");
+		buf.append ("]");
+		buf.append (" xhl=" + String.format("%6g", dXhl));
+		if (dXht > 0.0) buf.append (" xht=" + String.format("%6g", dXht));
+		if (dXlt > 0.0) buf.append (" xlt=" + String.format("%6g", dXlt));
+		buf.append (" %Rs=[");
+		for (int i = 0; i < nWindings; i++) buf.append (String.format("%6g", dR[i]) + " ");
+		buf.append ("]");
+		buf.append (" %imag=" + String.format("%6g", dImag) + " %noloadloss=" + String.format("%6g", dNLL));
+    return buf.toString();
   }
 
   static String GetBusPositionString (Model mdl, String id) {
@@ -988,7 +1319,7 @@ public class CDPSM_to_DSS extends Object {
         }
       }
     }
-    return " normamps=" + Double.toString(iMin);
+    return " normamps=" + String.format("%6g", iMin);
   } 
 
   static double FindBaseVoltage (Resource res, Property ptEquip, Property ptEqBaseV, Property ptLevBaseV, Property ptBaseNomV) {
@@ -1015,10 +1346,11 @@ public class CDPSM_to_DSS extends Object {
     double freq = 60.0, vmult = 0.001, smult = 0.001;
     int fInFile = 0;
     int fNameSeq = 0;
+    boolean bWantSec = true;
 
     if (args.length < 3) {
       System.out.println ("Usage: CDPSM_to_DSS [options] input.xml output_root");
-      System.out.println ("       -p={c|a|f|e|g|s|t} // profile; only supports Combined for now");
+      System.out.println ("       -t={y|n}           // triplex; y/n to include secondary (not effect for OpenDSS)");
       System.out.println ("       -e={u|i}           // encoding; UTF-8 or ISO-8859-1");
       System.out.println ("       -f={50|60}         // system frequency");
       System.out.println ("       -v={1|0.001}       // multiplier that converts voltage to kV for OpenDSS");
@@ -1030,8 +1362,10 @@ public class CDPSM_to_DSS extends Object {
       if (args[i].charAt(0) == '-') {
         char opt = args[i].charAt(1);
         String optVal = args[i].substring(3);
-        if (opt == 'p') {
-          fProfile = combinedOwl;
+	if (opt == 't') {
+	    if (optVal.charAt(0) == 'n') {
+		bWantSec = false;
+	    }
         } else if (opt=='e') {
           if (optVal.charAt(0) == 'u') {
             fEnc = "UTF8";
@@ -1062,11 +1396,12 @@ public class CDPSM_to_DSS extends Object {
       ++i;
     }
 
-    System.out.println (fEnc + " f=" + Double.toString(freq) + " v="  + Double.toString(vmult) + " s=" + Double.toString(smult));
+    System.out.println (fEnc + " f=" + String.format("%6g", freq) + " v="  + String.format("%6g", vmult) + " s=" + String.format("%6g", smult));
 
-    ModelMaker maker = ModelFactory.createFileModelMaker (fProfile);
-    Model tmpModel = maker.createDefaultModel();
-    Model model = ModelFactory.createOntologyModel (OntModelSpec.OWL_DL_MEM, tmpModel);
+//    ModelMaker maker = ModelFactory.createFileModelMaker (fProfile);
+//    Model tmpModel = maker.createDefaultModel();
+//    Model model = ModelFactory.createOntologyModel (OntModelSpec.OWL_DL_MEM, tmpModel);
+		Model model = ModelFactory.createOntologyModel (OntModelSpec.OWL_DL_MEM);
        
     InputStream in = FileManager.get().open(fName);
     if (in == null) {
@@ -1090,7 +1425,6 @@ public class CDPSM_to_DSS extends Object {
     Property ptName = model.getProperty (nsCIM, "IdentifiedObject.name");
     Property ptType = model.getProperty (nsRDF, "type");
     Property ptOpen = model.getProperty (nsCIM, "Switch.normalOpen");
-    Property ptPhs = model.getProperty (nsCIM, "ConductingEquipment.phases");
 
     Property ptEqBaseV = model.getProperty (nsCIM, "ConductingEquipment.BaseVoltage"); 
     Property ptLevBaseV = model.getProperty (nsCIM, "VoltageLevel.BaseVoltage"); 
@@ -1166,10 +1500,9 @@ public class CDPSM_to_DSS extends Object {
       String ckt = soln.get ("?ckt").toString();
 
       res = model.getResource (id);
-      phs = SafePhases (res, ptPhs);
 
-      double vmag = SafeDouble (res, ptESVmag, 1.0);
-      double vnom = SafeDouble (res, ptESVnom, vmag);
+      double vmag = vmult * SafeDouble (res, ptESVmag, 1.0);
+      double vnom = vmult * SafeDouble (res, ptESVnom, vmag);
       double vang = SafeDouble (res, ptESVang, 0.0) * 57.3;
       double r0 = SafeDouble (res, ptESr0, 0.0);
       double r1 = SafeDouble (res, ptESr1, 0.0);
@@ -1177,9 +1510,7 @@ public class CDPSM_to_DSS extends Object {
       double x0 = SafeDouble (res, ptESx0, x1);
       double vpu = vmag / vnom;
 
-      phs_cnt = Phase_Count (phs, false);
-      bus_phs = Bus_Phases (phs);
-      bus1 = GetBusName (model, id, 1) + bus_phs;
+      bus1 = GetBusName (model, id, 1); // TODO - no phase model
 
       String srcClass = "Vsource.";
       if (NumCircuits < 1) { // name.equals ("source")
@@ -1190,10 +1521,10 @@ public class CDPSM_to_DSS extends Object {
         name = "_" + name;
       }
 
-      out.println ("new " + srcClass + name + " phases=" + Integer.toString(phs_cnt) + " bus1=" + bus1 + 
-                   " basekv=" + vSrce + " pu=" + Double.toString(vpu) + " angle=" + Double.toString(vang) +
-                   " r0=" + Double.toString(r0) + " r1=" + Double.toString(r1) +
-                   " x0=" + Double.toString(x0) + " x1=" + Double.toString(x1));
+      out.println ("new " + srcClass + name + " phases=3 bus1=" + bus1 + 
+                   " basekv=" + String.format("%6g", vnom) + " pu=" + String.format("%6g", vpu) + " angle=" + String.format("%6g", vang) +
+                   " r0=" + String.format("%6g", r0) + " r1=" + String.format("%6g", r1) +
+                   " x0=" + String.format("%6g", x0) + " x1=" + String.format("%6g", x1));
       outGuid.println (srcClass + name + "\t" + DSS_Guid (id));
     }
     if (NumCircuits < 1) {  // try the first breaker
@@ -1205,22 +1536,17 @@ public class CDPSM_to_DSS extends Object {
         id = soln.get ("?s").toString();
 
         res = model.getResource (id);
-        phs = SafePhases (res, ptPhs);
-        phs_cnt = Phase_Count (phs, false);
-        bus_phs = Bus_Phases (phs);
-        bus1 = GetBusName (model, id, 1) + bus_phs;
+        bus1 = GetBusName (model, id, 1);
 
         name = SafeResName (res, ptName);
-        out.println ("new Circuit." + name + " phases=" + Integer.toString(phs_cnt) + 
-                     " bus1=" + bus1 + " basekv=1");
+        out.println ("new Circuit." + name + " phases=3 bus1=" + bus1 + " basekv=1");
 //        outGuid.println ("Circuit." + name + "\t" + DSS_Guid (id));
       }
     }
 
-    out.println ("// set frequency=" + Double.toString(freq));
+    out.println ("// set frequency=" + String.format("%6g", freq));
 
     // SynchronousMachine ==> Generator
-    out.println ();
     out.println ();
     query = QueryFactory.create (qPrefix + "select ?s where {?s r:type c:SynchronousMachine}");
     qexec = QueryExecutionFactory.create (query, model);
@@ -1237,11 +1563,8 @@ public class CDPSM_to_DSS extends Object {
       id = soln.get ("?s").toString();
 
       res = model.getResource (id);
-      phs = SafePhases (res, ptPhs);
-      phs_cnt = Phase_Count (phs, true);
-      phs_conn = Phase_Conn (phs);
-      bus_phs = Bus_Phases (phs);
-      bus1 = GetBusName (model, id, 1) + bus_phs;
+			// TODO - generators need phase modeling as well
+      bus1 = GetBusName (model, id, 1); // + bus_phs;
       name = SafeResName (res, ptName);
       Resource resUnit = res.getProperty (ptGenRef).getResource();
 
@@ -1250,18 +1573,17 @@ public class CDPSM_to_DSS extends Object {
       double genQ = SafeDouble (res, ptGenQ, 0.0) * 1000.0;
       double genQmin = SafeDouble (res, ptGenQmin, 0.44 * genS) * 1000.0 * -1.0;
       double genQmax = SafeDouble (res, ptGenQmax, 0.44 * genS) * 1000.0;
-      double genKv = FindBaseVoltage (res, ptEquip, ptEqBaseV, ptLevBaseV, ptBaseNomV);
+      double genKv = vmult * FindBaseVoltage (res, ptEquip, ptEqBaseV, ptLevBaseV, ptBaseNomV);
 
-      out.println ("new Generator." + name + " phases=" + Integer.toString(phs_cnt) + " bus1=" + bus1 + 
-                   " conn=" + phs_conn + " kva=" + Double.toString (genS) + " kw=" + Double.toString (genP) + 
-                   " kvar=" + Double.toString (genQ) + " minkvar=" + Double.toString (genQmin) + 
-                   " maxkvar=" + Double.toString (genQmax) + " kv=" + Double.toString (genKv));
+      out.println ("new Generator." + name + " phases=3 bus1=" + bus1 + 
+                   " conn=w kva=" + String.format("%6g", genS) + " kw=" + String.format("%6g", genP) + 
+                   " kvar=" + String.format("%6g", genQ) + " minkvar=" + String.format("%6g", genQmin) + 
+                   " maxkvar=" + String.format("%6g", genQmax) + " kv=" + String.format("%6g", genKv));
       outGuid.println ("Load." + name + "\t" + DSS_Guid (id));
     }
 
     // EnergyConsumer ==> Load
     double total_load_kw = 0.0;
-    out.println ();
     out.println ();
     query = QueryFactory.create (qPrefix + "select ?s where {?s r:type c:EnergyConsumer}");
     qexec = QueryExecutionFactory.create (query, model);
@@ -1269,16 +1591,19 @@ public class CDPSM_to_DSS extends Object {
     Property ptP = model.getProperty (nsCIM, "EnergyConsumer.pfixed");
     Property ptQ = model.getProperty (nsCIM, "EnergyConsumer.qfixed");
     Property ptCust = model.getProperty (nsCIM, "EnergyConsumer.customerCount");
+		Property ptPhsLoad1 = model.getProperty (nsCIM, "EnergyConsumerPhase.EnergyConsumer");
+		Property ptPhsLoad2 = model.getProperty (nsCIM, "EnergyConsumerPhase.phase");
+		Property ptConnLoad = model.getProperty (nsCIM, "EnergyConsumer.phaseConnection");
     while (results.hasNext()) {
       soln = results.next();
 
       id = soln.get ("?s").toString();
 
       res = model.getResource (id);
-      phs = SafePhases (res, ptPhs);
-      phs_cnt = Phase_Count (phs, true);
-      phs_conn = Phase_Conn (phs);
-      bus_phs = Bus_Phases (phs);
+			phs = WirePhases (model, res, ptPhsLoad1, ptPhsLoad2);
+			phs_cnt = Phase_xCount (phs, true);
+			phs_conn = Shunt_Conn (res, ptConnLoad);
+			bus_phs = Bus_ShuntPhases (phs, phs_cnt, phs_conn);
       bus1 = GetBusName (model, id, 1) + bus_phs;
 
       name = SafeResName (res, ptName);
@@ -1287,53 +1612,53 @@ public class CDPSM_to_DSS extends Object {
       pL *= smult;
       qL *= smult;
       total_load_kw += pL;
-      String pLoad = Double.toString(pL);
-      String qLoad = Double.toString(qL);
+      String pLoad = String.format("%6g", pL);
+      String qLoad = String.format("%6g", qL);
       String nCust = SafeProperty (res, ptCust, "1");
       String loadModel = GetLoadModel (model, res);
-      double loadKv = FindBaseVoltage (res, ptEquip, ptEqBaseV, ptLevBaseV, ptBaseNomV);
+      double loadKv = vmult * FindBaseVoltage (res, ptEquip, ptEqBaseV, ptLevBaseV, ptBaseNomV);
+			if ((phs_cnt < 2) && phs_conn.contains("w")) {  // TODO - verify for 2-phase loads
+				loadKv /= Math.sqrt(3.0);
+			}
 
-//      if (res.hasProperty (ptP)) {
-        out.println ("new Load." + name + " phases=" + Integer.toString(phs_cnt) + " bus1=" + bus1 + 
-                     " conn=" + phs_conn + " kw=" + pLoad + " kvar=" + qLoad + " numcust=" + nCust + 
-                     " kv=" + Double.toString(loadKv) + " " + loadModel);
-        outGuid.println ("Load." + name + "\t" + DSS_Guid (id));
-//      }
+      out.println ("new Load." + name + " phases=" + Integer.toString(phs_cnt) + " bus1=" + bus1 + 
+                   " conn=" + phs_conn + " kw=" + pLoad + " kvar=" + qLoad + " numcust=" + nCust + 
+                   " kv=" + String.format("%6g", loadKv) + " " + loadModel);
+      outGuid.println ("Load." + name + "\t" + DSS_Guid (id));
     }
     out.println ();
-    out.println ("// total load = " + Double.toString (total_load_kw) + " kW");
+    out.println ("// total load = " + String.format("%6g", total_load_kw) + " kW");
 
-    // ShuntCompensator ==> Capacitor
+    // LinearShuntCompensator ==> Capacitor
     out.println ();
-    out.println ();
-    query = QueryFactory.create (qPrefix + "select ?s ?name where {?s r:type c:ShuntCompensator. " + 
+    query = QueryFactory.create (qPrefix + "select ?s ?name where {?s r:type c:LinearShuntCompensator. " + 
                                  "?s c:IdentifiedObject.name ?name}");
     qexec = QueryExecutionFactory.create (query, model);
     results=qexec.execSelect();
-    Property ptSecB = model.getProperty (nsCIM, "ShuntCompensator.bPerSection");
-    Property ptSecN = model.getProperty (nsCIM, "ShuntCompensator.normalSections");
-//    Property ptNomQ = model.getProperty (nsCIM, "ShuntCompensator.nomQ");
-//    Property ptNomU = model.getProperty (nsCIM, "ShuntCompensator.nomU");
+    Property ptSecB = model.getProperty (nsCIM, "LinearShuntCompensator.bPerSection");
+    Property ptSecN = model.getProperty (nsCIM, "LinearShuntCompensator.normalSections");
     Property ptNumSteps = model.getProperty (nsCIM, "ShuntCompensator.maximumSections");
+		Property ptPhsShunt1 = model.getProperty (nsCIM, "ShuntCompensatorPhase.ShuntCompensator");
+		Property ptPhsShunt2 = model.getProperty (nsCIM, "ShuntCompensatorPhase.phase");
+		Property ptConnShunt = model.getProperty (nsCIM, "ShuntCompensator.phaseConnection");
+		Property ptNomU = model.getProperty (nsCIM, "ShuntCompensator.nomU");
     while (results.hasNext()) {
       soln = results.next();
 
       id = soln.get ("?s").toString();
       name = DSS_Name (soln.get ("?name").toString());
       res = model.getResource (id);
-      phs = SafePhases (res, ptPhs);
-//      String nomQ = SafeProperty (res, ptNomQ, "0.1");
-//      String nomU = SafeProperty (res, ptNomU, "100.0");
-      String numSteps = SafeProperty (res, ptNumSteps, "1");
-      double cap_b = SafeInt (res, ptNumSteps, 1) * SafeDouble (res, ptSecB, 0.0001);
-      double cap_v = FindBaseVoltage (res, ptEquip, ptEqBaseV, ptLevBaseV, ptBaseNomV);
-      String nomU = Double.toString(cap_v);
-      String nomQ = Double.toString(cap_v * cap_v * cap_b * 1000.0);
+			phs = WirePhases (model, res, ptPhsShunt1, ptPhsShunt2);
+			phs_cnt = Phase_xCount (phs, true);
+			phs_conn = Shunt_Conn (res, ptConnShunt);
+			bus_phs = Bus_ShuntPhases (phs, phs_cnt, phs_conn);
+			bus1 = GetBusName (model, id, 1) + bus_phs;
 
-      phs_cnt = Phase_Count (phs, true);
-      bus_phs = Bus_Phases (phs);
-      phs_conn = Phase_Conn (phs);
-      bus1 = GetBusName (model, id, 1) + bus_phs;
+			String numSteps = SafeProperty (res, ptNumSteps, "1");
+      double cap_b = SafeInt (res, ptNumSteps, 1) * SafeDouble (res, ptSecB, 0.0001);
+      double cap_v = vmult * SafeDouble (res, ptNomU, 120.0);
+			String nomU = String.format("%6g", cap_v);
+      String nomQ = String.format("%6g", cap_v * cap_v * cap_b * 1000.0);
 
       out.println ("new Capacitor." + name + " phases=" + Integer.toString(phs_cnt) + " bus1=" + bus1 + 
                    " conn=" + phs_conn + " numsteps=" + numSteps + " kv=" + nomU + " kvar=" + nomQ);
@@ -1343,18 +1668,9 @@ public class CDPSM_to_DSS extends Object {
 
     // WireData
     out.println ();
-    out.println ();
-    query = QueryFactory.create (qPrefix + "select ?s where {?s r:type c:WireInfo}");
+    query = QueryFactory.create (qPrefix + "select ?s where {?s r:type c:OverheadWireInfo}");
     qexec = QueryExecutionFactory.create (query, model);
     results=qexec.execSelect();
-    Property ptGMR = model.getProperty (nsCIM, "WireInfo.gmr");
-    Property ptWireRadius = model.getProperty (nsCIM, "WireInfo.radius");
-    Property ptWireDiameter = model.getProperty (nsCIM, "WireInfo.diameter");
-    Property ptWireCurrent = model.getProperty (nsCIM, "WireInfo.ratedCurrent");
-    Property ptWireR25 = model.getProperty (nsCIM, "WireInfo.rAC25");
-    Property ptWireR50 = model.getProperty (nsCIM, "WireInfo.rAC50");
-    Property ptWireR75 = model.getProperty (nsCIM, "WireInfo.rAC75");
-    Property ptWireRdc = model.getProperty (nsCIM, "WireInfo.rDC20");
     while (results.hasNext()) {
       soln = results.next();
 
@@ -1362,54 +1678,77 @@ public class CDPSM_to_DSS extends Object {
       res = model.getResource (id);
       name = SafeResName (res, ptName);
 
-      double normamps = SafeDouble (res, ptWireCurrent, 0.0);
-
-      double radius = SafeDouble (res, ptWireRadius, 0.0);
-      if (radius <= 0) {
-        radius = 0.5 * SafeDouble (res, ptWireDiameter, 0.0);
-      }
-
-      double gmr = SafeDouble (res, ptGMR, 0.0);
-      if (gmr <= 0) {
-        gmr = 0.7788 * radius;
-      }
-
-      double wireRac = SafeDouble (res, ptWireR50, 0.0);
-      if (wireRac <= 0) {
-        wireRac = SafeDouble (res, ptWireR25, 0.0);
-      }
-      if (wireRac <= 0) {
-        wireRac = SafeDouble (res, ptWireR75, 0.0);
-      }
-      double wireRdc = SafeDouble (res, ptWireRdc, 0.0);
-      if (wireRdc <= 0) {
-        wireRdc = wireRac;
-      } else if (wireRac <= 0) {
-        wireRac = wireRdc;
-      }
-
-      if (radius > 0.0 && gmr > 0.0) { // don't write WireData if it's just used for ratedCurrent
-        out.println ("new WireData." + name + " gmr=" + Double.toString(gmr) + " radius=" + Double.toString(radius) +
-                     " rac=" + Double.toString(wireRac) + " rdc=" + Double.toString(wireRdc) + " normamps=" + Double.toString(normamps) + 
-                     " Runits=m Radunits=m gmrunits=m");
+//      if (radius > 0.0 && gmr > 0.0) { // don't write WireData if it's just used for ratedCurrent
+        out.println ("new WireData." + name  + GetWireData (model, res));
         outGuid.println ("WireData." + name + "\t" + DSS_Guid (id));
-      }
+//      }
     }
 
-    // LineGeometries
+		// TSData
+		out.println ();
+		query = QueryFactory.create (qPrefix + "select ?s where {?s r:type c:TapeShieldCableInfo}");
+		qexec = QueryExecutionFactory.create (query, model);
+		results=qexec.execSelect();
+		Property ptLap = model.getProperty (nsCIM, "TapeShieldCableInfo.tapeLap");
+		Property ptThickness = model.getProperty (nsCIM, "TapeShieldCableInfo.tapeThickness");
+		Property ptOverScreen = model.getProperty (nsCIM, "CableInfo.diameterOverScreen");
+		while (results.hasNext()) {
+			soln = results.next();
+
+			id = soln.get ("?s").toString();
+			res = model.getResource (id);
+			name = SafeResName (res, ptName);
+
+			double tapeLap = SafeDouble (res, ptLap, 0.0);
+			double tapeThickness = SafeDouble (res, ptThickness, 0.0);
+			double dScreen = SafeDouble (res, ptOverScreen, 0.0);
+
+			out.println ("new TSData." + name + GetWireData (model, res) + GetCableData (model, res) +
+									 " DiaShield=" + String.format("%6g", dScreen + 2.0 * tapeThickness) +
+									 " tapeLayer=" + String.format("%6g", tapeThickness) + " tapeLap=" + String.format("%6g", tapeLap));
+			outGuid.println ("TSData." + name + "\t" + DSS_Guid (id));
+		}
+
+		// CNData
+		out.println ();
+		query = QueryFactory.create (qPrefix + "select ?s where {?s r:type c:ConcentricNeutralCableInfo}");
+		qexec = QueryExecutionFactory.create (query, model);
+		results=qexec.execSelect();
+		Property ptOverNeutral = model.getProperty (nsCIM, "ConcentricNeutralCableInfo.diameterOverNeutral");
+		Property ptStrandCount = model.getProperty (nsCIM, "ConcentricNeutralCableInfo.neutralStrandCount");
+		Property ptStrandGmr = model.getProperty (nsCIM, "ConcentricNeutralCableInfo.neutralStrandGmr");
+		Property ptStrandRadius = model.getProperty (nsCIM, "ConcentricNeutralCableInfo.neutralStrandRadius");
+		Property ptStrandRes = model.getProperty (nsCIM, "ConcentricNeutralCableInfo.neutralStrandRDC20");
+		while (results.hasNext()) {
+			soln = results.next();
+
+			id = soln.get ("?s").toString();
+			res = model.getResource (id);
+			name = SafeResName (res, ptName);
+
+			double cnDia = SafeDouble (res, ptOverNeutral, 0.0);
+			int cnCount = SafeInt (res, ptStrandCount, 0);
+			double cnGmr = SafeDouble (res, ptStrandGmr, 0.0);
+			double cnRadius = SafeDouble (res, ptStrandRadius, 0.0);
+			double cnRes = SafeDouble (res, ptStrandRes, 0.0);
+
+			out.println ("new CNData." + name + GetWireData (model, res) + GetCableData (model, res) +
+									 " k=" + Integer.toString(cnCount) + " GmrStrand=" + String.format("%6g", cnGmr) +
+									 " DiaStrand=" + String.format("%6g", 2 * cnRadius) + " Rstrand=" + String.format("%6g", cnRes));
+			outGuid.println ("CNData." + name + "\t" + DSS_Guid (id));
+		}
+
+    // LineSpacings (LineGeometries were exported as LineSpacings and individual wire assignments
     out.println ();
-    out.println ();
-    query = QueryFactory.create (qPrefix + "select ?s ?name where {?s r:type c:OverheadConductorInfo. " + 
+    query = QueryFactory.create (qPrefix + "select ?s ?name where {?s r:type c:WireSpacingInfo. " + 
                                  "?s c:IdentifiedObject.name ?name" +
                                  "}");
     qexec = QueryExecutionFactory.create (query, model);
     results=qexec.execSelect();
-    Property ptWireX = model.getProperty (nsCIM, "WireArrangement.mountingPointX");
-    Property ptWireY = model.getProperty (nsCIM, "WireArrangement.mountingPointY");
-    Property ptWireP = model.getProperty (nsCIM, "WireArrangement.position");
-//    Property ptWireInfo = model.getProperty (nsCIM, "WireArrangement.WireInfo");
-    Property ptWireInfo = model.getProperty (nsCIM, "WireArrangement.ConductorInfo");
-    Property ptGeoPhases = model.getProperty (nsCIM, "ConductorInfo.phaseCount");
+    Property ptWireX = model.getProperty (nsCIM, "WirePosition.xCoord");
+    Property ptWireY = model.getProperty (nsCIM, "WirePosition.yCoord");
+    Property ptWireP = model.getProperty (nsCIM, "WirePosition.phase");
+		Property ptWireS = model.getProperty (nsCIM, "WirePosition.WireSpacingInfo");
     while (results.hasNext()) {
       soln = results.next();
 
@@ -1417,35 +1756,95 @@ public class CDPSM_to_DSS extends Object {
       name = DSS_Name (soln.get ("?name").toString());
       res = model.getResource (id);
 
-      int nconds = 0;
-      int icond;
-      String WireInfo, wireX, wireY;
-      StringBuffer buf = new StringBuffer();
-      int nphases = SafeInt (res, ptGeoPhases, 1);
-      ResIterator wIter = model.listResourcesWithProperty (ptWireInfo, res);
+      int nconds=0;
+			int nphases=0;
+      double wireXa=0, wireXb=0, wireXc=0, wireXn=0, wireXs1=0, wireXs2=0;
+			double wireYa=0, wireYb=0, wireYc=0, wireYn=0, wireYs1=0, wireYs2=0;
+			boolean wireA = false;
+			boolean wireB = false;
+			boolean wireC = false;
+			boolean wireN = false;
+			boolean wireS1 = false;
+			boolean wireS2 = false;
+      ResIterator wIter = model.listResourcesWithProperty (ptWireS, res);
       while (wIter.hasNext()) {
         Resource wa = wIter.nextResource();
-        icond = SafeInt (wa, ptWireP, 1);
-        if (icond > nconds) {
-          nconds = icond;
-        }
-        wireX = SafeProperty (wa, ptWireX, "0");
-        wireY = SafeProperty (wa, ptWireY, "0");
-        WireInfo = SafeResourceLookup (model, ptName, wa, ptWireInfo, "**");
-        buf.append ("~ cond=" + Integer.toString(icond) + " wire=" + WireInfo + " x=" + wireX + " h=" + wireY + "\n");
+				++nconds;
+				phs = Phase_Kind_String (wa.getProperty(ptWireP).getObject().toString()); // TODO - protect
+				if (phs.equals("A")) {
+					wireXa = SafeDouble (wa, ptWireX, 0);
+					wireYa = SafeDouble (wa, ptWireY, 0);
+					wireA = true;
+					++nphases;
+				}
+				if (phs.equals("B")) {
+					wireXb = SafeDouble (wa, ptWireX, 0);
+					wireYb = SafeDouble (wa, ptWireY, 0);
+					wireB = true;
+					++nphases;
+				}
+				if (phs.equals("C")) {
+					wireXc = SafeDouble (wa, ptWireX, 0);
+					wireYc = SafeDouble (wa, ptWireY, 0);
+					wireC = true;
+					++nphases;
+				}
+				if (phs.equals("N")) {
+					wireXn = SafeDouble (wa, ptWireX, 0);
+					wireYn = SafeDouble (wa, ptWireY, 0);
+					wireN = true;
+				}
+				if (phs.equals("s1")) {
+					wireXs1 = SafeDouble (wa, ptWireX, 0);
+					wireYs1 = SafeDouble (wa, ptWireY, 0);
+					wireS1 = true;
+					++nphases;
+				}
+				if (phs.equals("s2")) {
+					wireXs2 = SafeDouble (wa, ptWireX, 0);
+					wireYs2 = SafeDouble (wa, ptWireY, 0);
+					wireS2 = true;
+					++nphases;
+				}
       }
 
       if (nconds > 0 && nphases > 0) {
-        out.println ("new LineGeometry." + name + " nconds=" + Integer.toString(nconds) + " nphases=" + Integer.toString(nphases) + 
-                     " reduce=y units=ft");
-        out.println (buf.toString());
-        outGuid.println ("LineGeometry." + name + "\t" + DSS_Guid (id));
+				mapSpacings.put (name, new SpacingCount(nconds, nphases)); // keep track for wire assignments below
+        out.println ("new LineSpacing." + name + " nconds=" + Integer.toString(nconds) +
+										 " nphases=" + Integer.toString(nphases) + " units=m");
+				StringBuffer xBuf = new StringBuffer (" x=[");
+				StringBuffer hBuf = new StringBuffer (" h=[");
+				if (wireA)	{
+					xBuf.append (String.format("%6g", wireXa) + ",");
+					hBuf.append (String.format("%6g", wireYa) + ",");
+				}
+				if (wireB)	{
+					xBuf.append (String.format("%6g", wireXb) + ",");
+					hBuf.append (String.format("%6g", wireYb) + ",");
+				}
+				if (wireC)	{
+					xBuf.append (String.format("%6g", wireXc) + ",");
+					hBuf.append (String.format("%6g", wireYc) + ",");
+				}
+				if (wireS1)	{
+					xBuf.append (String.format("%6g", wireXs1) + ",");
+					hBuf.append (String.format("%6g", wireYs1) + ",");
+				}
+				if (wireS2)	{
+					xBuf.append (String.format("%6g", wireXs2) + ",");
+					hBuf.append (String.format("%6g", wireYs2) + ",");
+				}
+				if (wireN)	{
+					xBuf.append (String.format("%6g", wireXn) + ",");
+					hBuf.append (String.format("%6g", wireYn) + ",");
+				}
+				out.println ("~" + xBuf.toString() + "]" + hBuf.toString() + "]");
+        outGuid.println ("LineSpacing." + name + "\t" + DSS_Guid (id));
       }
     }
 
     // LineCodes
     int NumLineCodes = 0;
-    out.println ();
     out.println ();
     query = QueryFactory.create (qPrefix + "select ?s ?name where {?s r:type c:PerLengthPhaseImpedance. " + 
                                  "?s c:IdentifiedObject.name ?name" +
@@ -1497,15 +1896,15 @@ public class CDPSM_to_DSS extends Object {
       if (sqX0 <= 0) {
         sqX0 = sqX1;
       }
-      String seqR1 = Double.toString(sqR1);
-      String seqR0 = Double.toString(sqR0);
-      String seqX1 = Double.toString(sqX1);
-      String seqX0 = Double.toString(sqX0);
+      String seqR1 = String.format("%6g", sqR1);
+      String seqR0 = String.format("%6g", sqR0);
+      String seqX1 = String.format("%6g", sqX1);
+      String seqX0 = String.format("%6g", sqX0);
 
       double bch = SafeDouble (res, ptSeqB1, 0);
-      String seqC1 = Double.toString(bch * 1.0e9 / 314.0);  // TODO: only for EdF during 2009 interop tests
+      String seqC1 = String.format("%6g", bch * 1.0e9 / freq / 2.0 / Math.PI);
       bch = SafeDouble (res, ptSeqB0, 0);
-      String seqC0 = Double.toString(bch * 1.0e9 / 314.0);  // TODO: only for EdF during 2009 interop tests
+      String seqC0 = String.format("%6g", bch * 1.0e9 / freq / 2.0 / Math.PI);
 
       out.println ("new LineCode." + name + " nphases=3 r1=" + seqR1 + " x1=" + seqX1 + " c1=" + seqC1 +
                    " r0=" + seqR0 + " x0=" + seqX0 + " c0=" + seqC0);
@@ -1519,7 +1918,6 @@ public class CDPSM_to_DSS extends Object {
     }
 
     // ACLineSegment ==> Line
-    out.println ();
     out.println ();
     query = QueryFactory.create (qPrefix + "select ?s ?name ?len where {?s r:type c:ACLineSegment. " + 
                                  "?s c:IdentifiedObject.name ?name;" +
@@ -1544,8 +1942,7 @@ public class CDPSM_to_DSS extends Object {
       }
       res = model.getResource (id);
       String len = soln.get ("?len").toString();
-//      phs = SafePhases (res, ptPhs);
-      phs = ACLinePhases (model, res, ptPhsLine1, ptPhsLine2);
+      phs = WirePhases (model, res, ptPhsLine1, ptPhsLine2);
       phs_cnt = Phase_xCount (phs, false);
       bus_phs = Bus_xPhases (phs);
       bus1 = GetBusName (model, id, 1) + bus_phs;
@@ -1553,14 +1950,15 @@ public class CDPSM_to_DSS extends Object {
       double dLen = SafeDouble (res, ptLineLen, 1.0);
 
       String zPhase = SafeResourceLookup (model, ptName, res, ptPhsZ, "");
-      String zParms = GetACLineParameters (model, res, dLen);
+      String zParms = GetACLineParameters (model, res, dLen, freq);
+      String zSpace = GetLineSpacing (model, res);
       String linecode = "";
       if (zPhase.length() > 0) {
         linecode = " linecode=" + zPhase;
 //      } else if (zSequence.length() > 0) {
 //        linecode = " linecode=" + zSequence;
-//      } else if (zParms.length() < 1 && zInfo.length() > 0) {
-//        linecode = " geometry=" + zInfo;
+      } else if (zSpace.length() > 0) {
+        linecode = zSpace;
       } else if (zParms.length() > 0) {
         linecode = zParms;
       } else if (phs_cnt == 1) {
@@ -1576,7 +1974,7 @@ public class CDPSM_to_DSS extends Object {
       }
 
       out.println ("new Line." + name + " phases=" + Integer.toString(phs_cnt) + " bus1=" + bus1 + " bus2=" + bus2 
-                          + " length=" + len + linecode + zAmps);
+                          + " length=" + String.format("%6g", dLen) + linecode + zAmps);
       outGuid.println ("Line." + name + "\t" + DSS_Guid (id));
     }
 
@@ -1590,9 +1988,8 @@ public class CDPSM_to_DSS extends Object {
     Property ptPhsSwt1 = model.getProperty (nsCIM, "SwitchPhase.Switch");
     Property ptPhsSwt2 = model.getProperty (nsCIM, "SwitchPhase.phaseSide1"); // TODO - phaseSide2?
     if (results.hasNext()) {
-      out.println ();
+			out.println ();
       out.println ("// Load Break Switches");
-      out.println ();
     }
     while (results.hasNext()) {
       soln = results.next();
@@ -1600,7 +1997,7 @@ public class CDPSM_to_DSS extends Object {
       id = soln.get ("?s").toString();
       name = DSS_Name (soln.get ("?name").toString());
       res = model.getResource (id);
-      phs = ACLinePhases (model, res, ptPhsSwt1, ptPhsSwt2);
+      phs = WirePhases (model, res, ptPhsSwt1, ptPhsSwt2);
       phs_cnt = Phase_xCount (phs, false);
       bus_phs = Bus_xPhases (phs);
       String open = soln.get ("?open").toString();
@@ -1628,7 +2025,6 @@ public class CDPSM_to_DSS extends Object {
     if (results.hasNext()) {
       out.println ();
       out.println ("// Fuses");
-      out.println ();
     }
     while (results.hasNext()) {
       soln = results.next();
@@ -1636,7 +2032,7 @@ public class CDPSM_to_DSS extends Object {
       id = soln.get ("?s").toString();
       name = DSS_Name (soln.get ("?name").toString());
       res = model.getResource (id);
-      phs = ACLinePhases (model, res, ptPhsSwt1, ptPhsSwt2);
+      phs = WirePhases (model, res, ptPhsSwt1, ptPhsSwt2);
       phs_cnt = Phase_xCount (phs, false);
       bus_phs = Bus_xPhases (phs);
       String open = soln.get ("?open").toString();
@@ -1662,7 +2058,6 @@ public class CDPSM_to_DSS extends Object {
     if (results.hasNext()) {
       out.println ();
       out.println ("// Breakers");
-      out.println ();
     }
     while (results.hasNext()) {
       soln = results.next();
@@ -1670,7 +2065,7 @@ public class CDPSM_to_DSS extends Object {
       id = soln.get ("?s").toString();
       name = DSS_Name (soln.get ("?name").toString());
       res = model.getResource (id);
-      phs = ACLinePhases (model, res, ptPhsSwt1, ptPhsSwt2);
+      phs = WirePhases (model, res, ptPhsSwt1, ptPhsSwt2);
       phs_cnt = Phase_xCount (phs, false);
       bus_phs = Bus_xPhases (phs);
       String open = SafeProperty (res, ptOpen, "false");
@@ -1696,7 +2091,6 @@ public class CDPSM_to_DSS extends Object {
     if (results.hasNext()) {
       out.println ();
       out.println ("// Disconnectors");
-      out.println ();
     }
     while (results.hasNext()) {
       soln = results.next();
@@ -1704,7 +2098,7 @@ public class CDPSM_to_DSS extends Object {
       id = soln.get ("?s").toString();
       name = DSS_Name (soln.get ("?name").toString());
       res = model.getResource (id);
-      phs = ACLinePhases (model, res, ptPhsSwt1, ptPhsSwt2);
+      phs = WirePhases (model, res, ptPhsSwt1, ptPhsSwt2);
       phs_cnt = Phase_xCount (phs, false);
       bus_phs = Bus_xPhases (phs);
       String open = SafeProperty (res, ptOpen, "false");
@@ -1724,7 +2118,6 @@ public class CDPSM_to_DSS extends Object {
 
     // Transformer Codes
     out.println ();
-    out.println ();
     query = QueryFactory.create (qPrefix + "select ?s ?name where {?s r:type c:TransformerTankInfo. " + 
                                  "?s c:IdentifiedObject.name ?name" +
                                  "}");
@@ -1735,13 +2128,11 @@ public class CDPSM_to_DSS extends Object {
 
       id = soln.get ("?s").toString();
       name = DSS_Name (soln.get ("?name").toString());
-// in 2011 GE and EdF instance files, we don't really have XfmrCodes
-//      out.println ("new XfmrCode." + name + " " + GetXfmrCode (model, id));
-//      outGuid.println ("XfmrCode." + name + "\t" + DSS_Guid (id));
+      out.println ("new XfmrCode." + name + " " + GetXfmrCode (model, id, smult, vmult));
+      outGuid.println ("XfmrCode." + name + "\t" + DSS_Guid (id));
     }
 
     // Transformers
-    out.println ();
     out.println ();
     query = QueryFactory.create (qPrefix + "select ?s ?name where {?s r:type c:PowerTransformer. " + 
                                  "?s c:IdentifiedObject.name ?name" +
@@ -1761,27 +2152,40 @@ public class CDPSM_to_DSS extends Object {
       xfmrbank = " bank=" + name;
 
       // using tanks or not?
+			Property ptAssetPSR = model.getProperty (nsCIM, "Asset.PowerSystemResources");
+			Property ptAssetInf = model.getProperty (nsCIM, "Asset.AssetInfo");
       Property ptTank = model.getProperty (nsCIM, "TransformerTank.PowerTransformer");
       ResIterator itTank = model.listResourcesWithProperty (ptTank, res);
+			Resource rDS, rAsset;
       if (itTank.hasNext()) { // write all the tanks to this bank
         while (itTank.hasNext()) {
           Resource rTank = itTank.nextResource();
           name = DSS_Name (rTank.getProperty(ptName).getString());
-          xfBus = GetTankBusesAndPhaseCount (model, rTank);
-          out.println ("new Transformer." + name + xfmrbank + xfBus);
-          out.println ("~ " + GetTankData (model, rTank, smult, vmult));
+					// using XfmrCode or not?
+					ResIterator itAsset = model.listResourcesWithProperty (ptAssetPSR, rTank);
+					if (itAsset.hasNext()) {
+						rAsset = itAsset.nextResource();
+						if (rAsset.hasProperty(ptAssetInf)) {
+							rDS = rAsset.getProperty(ptAssetInf).getResource();
+							xfBus = GetTankBusesAndXfmrCode (model, rTank, rDS);
+							out.println ("new Transformer." + name + xfmrbank + xfBus); // TODO - recover if no datasheet
+						}
+					} else {
+						xfBus = GetTankBusesAndPhaseCount (model, rTank, false);
+						out.println ("new Transformer." + name + xfmrbank + xfBus);
+						out.println ("~ " + GetTankData (model, rTank, smult, vmult) + " // Tanked");
+					}
           outGuid.println ("Transformer." + name + "\t" + DSS_Guid (id));
         }
       } else { // standalone power transformer
         xfBus = GetWindingBuses (model, id);
         out.println ("new Transformer." + name + xfmrbank + " buses=" 
-                     + xfBus + GetPowerTransformerData (model, id));
+                     + xfBus + "\n ~ " + GetPowerTransformerData (model, id, smult, vmult) + " // Standalone");
         outGuid.println ("Transformer." + name + "\t" + DSS_Guid (id));
       }
     }
 
-    // TODO - regulators were not updated or tested in 2011
-    out.println ();
+		// RegControls
     out.println ();
     query = QueryFactory.create (qPrefix + "select ?s ?name where {?s r:type c:RatioTapChanger. " + 
                                  "?s c:IdentifiedObject.name ?name}");
@@ -1799,8 +2203,25 @@ public class CDPSM_to_DSS extends Object {
       outGuid.println ("RegControl." + name + "\t" + DSS_Guid (id));
     }
 
+		// CapControls
+		out.println ();
+		query = QueryFactory.create (qPrefix + "select ?s ?name where {?s r:type c:RegulatingControl. " + 
+																 "?s c:IdentifiedObject.name ?name}");
+		qexec = QueryExecutionFactory.create (query, model);
+		results=qexec.execSelect();
+		while (results.hasNext()) {
+			soln = results.next();
+
+			id = soln.get ("?s").toString();
+			name = DSS_Name (soln.get ("?name").toString());
+			res = model.getResource (id);
+			String sReg = GetCapControlData (model, res);
+
+			out.println ("new CapControl." + name + " " + sReg);
+			outGuid.println ("CapControl." + name + "\t" + DSS_Guid (id));
+		}
+
     // unsupported stuff - TODO - add Jumper and Disconnector
-    out.println ();
     out.println ();
     query = QueryFactory.create (qPrefix + "select ?s where {?s r:type c:Junction}");
     qexec = QueryExecutionFactory.create (query, model);
@@ -1809,10 +2230,8 @@ public class CDPSM_to_DSS extends Object {
       soln = results.next();
       id = soln.get ("?s").toString();
       res = model.getResource (id);
-      phs = SafePhases (res, ptPhs);
-      phs_cnt = Phase_Count (phs, false);
       name = SafeResName (res, ptName);
-      out.println ("// new Junction." + name + " phases=" + Integer.toString(phs_cnt));
+      out.println ("// new Junction." + name);
     }
     query = QueryFactory.create (qPrefix + "select ?s where {?s r:type c:BusbarSection}");
     qexec = QueryExecutionFactory.create (query, model);
@@ -1821,10 +2240,8 @@ public class CDPSM_to_DSS extends Object {
       soln = results.next();
       id = soln.get ("?s").toString();
       res = model.getResource (id);
-      phs = SafePhases (res, ptPhs);
-      phs_cnt = Phase_Count (phs, false);
       name = SafeResName (res, ptName);
-      out.println ("// new BusbarSection." + name + " phases=" + Integer.toString(phs_cnt));
+      out.println ("// new BusbarSection." + name);
     }
     query = QueryFactory.create (qPrefix + "select ?s where {?s r:type c:Bay}");
     qexec = QueryExecutionFactory.create (query, model);
@@ -1833,44 +2250,42 @@ public class CDPSM_to_DSS extends Object {
       soln = results.next();
       id = soln.get ("?s").toString();
       res = model.getResource (id);
-      phs = SafePhases (res, ptPhs);
-      phs_cnt = Phase_Count (phs, false);
       name = SafeResName (res, ptName);
-      out.println ("// new Bay." + name + " phases=" + Integer.toString(phs_cnt));
+      out.println ("// new Bay." + name);
     }
-    query = QueryFactory.create (qPrefix + "select ?s where {?s r:type c:BaseVoltage}");
+
+		// wrapup
+		query = QueryFactory.create (qPrefix + "select ?s where {?s r:type c:BaseVoltage}");
     qexec = QueryExecutionFactory.create (query, model);
     results=qexec.execSelect();
+		if (results.hasNext()) {
+			out.print ("set voltagebases=[");
+		} else {
+			out.println ("set voltagebases=[1.0]");
+		}
     while (results.hasNext()) {
       soln = results.next();
       id = soln.get ("?s").toString();
       res = model.getResource (id);
-      phs = SafePhases (res, ptPhs);
-      phs_cnt = Phase_Count (phs, false);
-      name = SafeResName (res, ptName);
-      double vnom = SafeDouble (res, ptBaseNomV, 1.0);
-      out.println ("// new BaseVoltage." + name + " vnom=" + Double.toString(vnom));
-    }
-
-    // wrapup
-    out.println ();
-    out.println ();
-    out.println ("// guids " + fGuid);
-    out.println ();
-    if (NumCircuits > 0) {
-      out.println ("set voltagebases=[115.0, 63.0, 42.0, 20.0, 4.16, 0.48]");
-    } else {
-      out.println ("set voltagebases=[1.0]");
+			double vnom = vmult * SafeDouble (res, ptBaseNomV, 1.0);
+			out.print (String.format("%6g", vnom));
+			if (results.hasNext()) {
+				out.print (", ");
+			} else {
+				out.println ("]");
+			}
     }
     out.println ("calcv");
-    out.println ("// setloadandgenkv");
-    out.println ("// solve");
     out.println ("buscoords " + fBus);
-    out.println ();
+		out.println ("// guids " + fGuid);
     out.close ();
 
     outGuid.println ();
     outGuid.close ();
-  }
+
+//		for (HashMap.Entry<String,SpacingCount> pair : mapSpacings.entrySet()) {
+//			System.out.printf ("%s ==> %d, %d\n", pair.getKey(), pair.getValue().getNumConductors(), pair.getValue().getNumPhases());
+//		}
+	}
 }
 

@@ -34,6 +34,8 @@ unit Solution;
          0-th element is alway ground(complex zero volts).
  8-14-06 Revised power flow initialization; removed forward/backward sweep
 
+ 9-14-16 Added SampleTheMeters Flag to allow sampling energy meters in Time and DutyCycle mode
+
 }
 
 interface
@@ -46,7 +48,8 @@ USES
     DSSObject,
     Dynamics,
     EnergyMeter,
-    SysUtils;
+    SysUtils
+{$IFDEF FPC};{$ELSE},System.Diagnostics, System.TimeSpan;{$ENDIF}
 
 CONST
 
@@ -96,6 +99,7 @@ TYPE
        procedure Set_Frequency(const Value: Double);
        PROCEDURE Set_Mode(const Value: Integer);
        procedure Set_Year(const Value: Integer);
+       procedure Set_Total_Time(const Value: Double);
 
      public
 
@@ -118,9 +122,9 @@ TYPE
        Harmonic   :Double;
        HarmonicList  :pDoubleArray;
        HarmonicListSize :Integer;
-       hYsystem :LongWord;   {Handle for main (system) Y matrix}
-       hYseries :LongWord;   {Handle for series Y matrix}
-       hY :LongWord;         {either hYsystem or hYseries}
+       hYsystem :NativeUint;   {Handle for main (system) Y matrix}
+       hYseries :NativeUint;   {Handle for series Y matrix}
+       hY :NativeUint;         {either hYsystem or hYseries}
        IntervalHrs:Double;   // Solution interval since last solution, hrs.
        IsDynamicModel :Boolean;
        IsHarmonicModel :Boolean;
@@ -130,25 +134,37 @@ TYPE
        LoadsNeedUpdating :Boolean;
        MaxControlIterations :Integer;
        MaxError :Double;
-       MaxIterations :Integer;
+       MaxIterations,
+       MinIterations :Integer;
        MostIterationsDone :Integer;
        NodeVbase :pDoubleArray;
        NumberOfTimes :Integer;  // Number of times to solve
        PreserveNodeVoltages:Boolean;
        RandomType :Integer;     //0 = none; 1 = gaussian; 2 = UNIFORM
-       SeriesYInvalid :Boolean;
-       SolutionCount :Integer;  // Counter incremented for each solution
-       SolutionInitialized :Boolean;
+       SampleTheMeters : Boolean;  // Flag to allow sampling of EnergyMeters
+       SeriesYInvalid  : Boolean;
+       SolutionCount   : Integer;  // Counter incremented for each solution
+       SolutionInitialized : Boolean;
        SystemYChanged  : Boolean;
        UseAuxCurrents  : Boolean;
        VmagSaved : pDoubleArray;
        VoltageBaseChanged : Boolean;
 
+        {Voltage and Current Arrays}
+       NodeV    : pNodeVArray;    // Main System Voltage Array   allows NodeV^[0]=0
+       Currents : pNodeVArray;      // Main System Currents Array
 
-       {Voltage and Current Arrays}
-       NodeV    :pNodeVArray;    // Main System Voltage Array   allows NodeV^[0]=0
-       Currents :pNodeVArray;      // Main System Currents Array
-
+//****************************Timing variables**********************************
+       SolveStartTime      : int64;
+       SolveEndtime        : int64;
+       GStartTime     : int64;
+       Gendtime       : int64;
+       LoopEndtime            : int64;
+       Total_Time_Elapsed     : double;
+       Solve_Time_Elapsed     : double;
+       Total_Solve_Time_Elapsed  : double;
+       Step_Time_Elapsed      : double;
+//******************************************************************************
 
        constructor Create(ParClass:TDSSClass; const solutionname:String);
        destructor  Destroy; override;
@@ -184,14 +200,20 @@ TYPE
        PROCEDURE Update_dblHour;
        PROCEDURE Increment_time;
 
-       Property  Mode      :Integer  Read dynavars.SolutionMode Write Set_Mode;
-       Property  Frequency :Double   Read FFrequency            Write Set_Frequency;
-       Property  Year      :Integer  Read FYear                 Write Set_Year;
+       PROCEDURE UpdateLoopTime;
+
+       Property  Mode         :Integer  Read dynavars.SolutionMode Write Set_Mode;
+       Property  Frequency    :Double   Read FFrequency            Write Set_Frequency;
+       Property  Year         :Integer  Read FYear                 Write Set_Year;
+       Property  Time_Solve :Double  Read Solve_Time_Elapsed;
+       Property  Time_TotalSolve:Double  Read Total_Solve_Time_Elapsed;
+       Property  Time_Step:Double      Read Step_Time_Elapsed;     // Solve + sample
+       Property  Total_Time   :Double  Read Total_Time_Elapsed      Write Set_Total_Time;
 
  // Procedures that use to be private before 01-20-2016
 
        PROCEDURE AddInAuxCurrents(SolveType:Integer);
-       Function SolveSystem(V:pNodeVArray):Integer;
+       Function  SolveSystem(V:pNodeVArray):Integer;
        PROCEDURE GetPCInjCurr;
        PROCEDURE GetSourceInjCurrents;
        PROCEDURE ZeroInjCurr;
@@ -209,14 +231,12 @@ VAR
 implementation
 
 USES  SolutionAlgs,
-      DSSClassDefs, DSSGlobals, DSSForms, CktElement,  ControlElem, Fault,
-      Executive, AutoAdd,  YMatrix,
-      ParserDel, Generator,
+      DSSClassDefs, DSSGlobals, {$IFDEF FPC} CmdForms,{$ELSE} Windows, DSSForms,{$ENDIF}
+      CktElement,  ControlElem, Fault, Executive, AutoAdd,  YMatrix, ParserDel, Generator,
 {$IFDEF DLL_ENGINE}
       ImplGlobals,  // to fire events
 {$ENDIF}
-      Math,  Circuit, Utilities
-;
+      Math,  Circuit, Utilities, KLUSolve;
 
 Const NumPropsThisClass = 1;
 
@@ -294,6 +314,8 @@ Begin
     Inherited Create(ParClass);
     Name := LowerCase(SolutionName);
 
+//    i := SetLogFile ('c:\\temp\\KLU_Log.txt', 1);
+
     FYear    := 0;
     DynaVars.intHour     := 0;
     DynaVars.t        := 0.0;
@@ -307,17 +329,21 @@ Begin
     VoltageBaseChanged := TRUE;  // Forces Building of convergence check arrays
 
     MaxIterations    := 15;
+    MinIterations    := 2;
     MaxControlIterations  := 10;
-    ConvergenceTolerance := 0.0001;
-    ConvergedFlag := FALSE;
+    ConvergenceTolerance  := 0.0001;
 
-    IsDynamicModel   := FALSE;
-    IsHarmonicModel  := FALSE;
+    ConvergedFlag   := FALSE;
+
+    SampleTheMeters := FALSE;  // Flag to tell solution algorithm to sample the Energymeters
+
+    IsDynamicModel  := FALSE;
+    IsHarmonicModel := FALSE;
 
     Frequency := DefaultBaseFreq;
     {Fundamental := 60.0; Moved to Circuit and used as default base frequency}
     Harmonic := 1.0;
-    
+
     FrequencyChanged := TRUE;  // Force Building of YPrim matrices
     DoAllHarmonics   := TRUE;
     FirstIteration   := TRUE;
@@ -378,9 +404,11 @@ Begin
       Reallocmem(NodeV, 0);
       Reallocmem(NodeVbase, 0);
       Reallocmem(VMagSaved, 0);
-      
+
       If hYsystem <> 0 THEN   DeleteSparseSet(hYsystem);
       If hYseries <> 0 THEN   DeleteSparseSet(hYseries);
+
+//      SetLogFile ('c:\\temp\\KLU_Log.txt', 0);
 
       Reallocmem(HarmonicList,0);
 
@@ -449,7 +477,7 @@ Try
 {$ENDIF}
 
     {CheckFaultStatus;  ???? needed here??}
-
+     {$IFNDEF FPC}QueryPerformanceCounter(GStartTime);{$ENDIF}
      Case Dynavars.SolutionMode OF
          SNAPSHOT:     SolveSnap;
          YEARLYMODE:   SolveYearly;
@@ -469,11 +497,12 @@ Try
          HARMONICMODE: SolveHarmonic;
          GENERALTIME:  SolveGeneralTime;
          HARMONICMODET:SolveHarmonicT;  //Declares the Hsequential-time harmonics
-
      Else
          DosimpleMsg('Unknown solution mode.', 481);
      End;
-
+    {$IFNDEF FPC}QueryPerformanceCounter(GEndTime);{$ENDIF}
+    Total_Solve_Time_Elapsed := ((GEndTime-GStartTime)/CPU_Freq)*1000000;
+    Total_Time_Elapsed := Total_Time_Elapsed + Total_Solve_Time_Elapsed;
 Except
 
     On E:Exception Do Begin
@@ -506,9 +535,11 @@ Begin
         Else If Vmag <> 0.0         Then ErrorSaved^[i] := Abs(1.0 - VmagSaved^[i]/Vmag);
 
         VMagSaved^[i] := Vmag;  // for next go-'round
-
+{$IFNDEF FPC}
         MaxError := Max(MaxError, ErrorSaved^[i]);  // update max error
-
+{$ELSE}
+       if ErrorSaved^[i] > MaxError Then MaxError := ErrorSaved^[i]; // TODO - line above used to compile in FPC
+{$ENDIF}
     End;
 
 {$IFDEF debugtrace}
@@ -716,7 +747,7 @@ Begin
        SolveSystem(NodeV);
        LoadsNeedUpdating := FALSE;
 
-   Until (Converged and (Iteration > 1)) or (Iteration >= MaxIterations);
+   Until (Converged and (Iteration >= MinIterations)) or (Iteration >= MaxIterations);
 
 
 End;
@@ -781,7 +812,7 @@ Begin
                 im := im - dV^[i].im;
            End;
 
-       UNTIL (Converged and (Iteration > 1)) or (Iteration >= MaxIterations);
+       UNTIL (Converged and (Iteration >= MinIterations)) or (Iteration >= MaxIterations);
     End;
 End;
 
@@ -847,7 +878,7 @@ Begin
     Inc(SolutionCount);    //Unique number for this solution
 
     ZeroInjCurr;   // Side Effect: Allocates InjCurr
-    GetSourceInjCurrents;    // Vsource and Isource only
+    GetSourceInjCurrents;    // Vsource, Isource and VCCS only
 
     {Make the series Y matrix the active matrix}
     IF  hYseries = 0 THEN
@@ -945,7 +976,7 @@ VAR
 Begin
    SnapShotInit;
    TotalIterations    := 0;
-
+   {$IFNDEF FPC}QueryPerformanceCounter(SolveStartTime);{$ENDIF}
    REPEAT
 
        Inc(ControlIteration);
@@ -975,7 +1006,8 @@ Begin
 {$IFDEF DLL_ENGINE}
    Fire_StepControls;
 {$ENDIF}
-
+{$IFNDEF FPC}QueryPerformanceCounter(SolveEndTime);{$ENDIF}
+   Solve_Time_Elapsed := ((SolveEndtime-SolveStartTime)/CPU_Freq)*1000000;
    Iteration := TotalIterations;  { so that it reports a more interesting number }
 
 End;
@@ -987,6 +1019,7 @@ Begin
    Result := 0;
 
    LoadsNeedUpdating := TRUE;  // Force possible update of loads and generators
+   {$IFNDEF FPC}QueryPerformanceCounter(SolveStartTime);{$ENDIF}
 
    If SystemYChanged THEN BuildYMatrix(WHOLEMATRIX, TRUE);   // Side Effect: Allocates V
 
@@ -1005,6 +1038,9 @@ Begin
        ConvergedFlag := TRUE;
    End;
 
+   {$IFNDEF FPC}QueryPerformanceCounter(SolveEndTime);{$ENDIF}
+   Solve_Time_Elapsed  := ((SolveEndtime-SolveStartTime)/CPU_Freq)*1000000;
+   Total_Time_Elapsed  :=  Total_Time_Elapsed + Solve_Time_Elapsed;
    Iteration := 1;
    LastSolutionWasDirect := TRUE;
 
@@ -1115,7 +1151,8 @@ Begin
      Writeln(F, 'Set circuit=',  ActiveCircuit.Name);
      Writeln(F, 'Set editor=',   DefaultEditor);
      Writeln(F, 'Set tolerance=', Format('%-g', [ConvergenceTolerance]));
-     Writeln(F, 'Set maxiter=',   MaxIterations:0);
+     Writeln(F, 'Set maxiterations=',   MaxIterations:0);
+     Writeln(F, 'Set miniterations=',   MinIterations:0);
      Writeln(F, 'Set loadmodel=', GetLoadModel);
 
      Writeln(F, 'Set loadmult=',    Format('%-g', [ActiveCircuit.LoadMultiplier]));
@@ -1292,6 +1329,11 @@ Begin
                       IF NOT ControlQueue.DoActions (DynaVars.intHour, DynaVars.t)
                       THEN ControlActionsDone := TRUE;
                  End;
+              MULTIRATE:
+                 Begin  //  execute the nearest set of control actions but leaves time where it is
+                      IF NOT ControlQueue.DoMultiRate(DynaVars.intHour, DynaVars.t)
+                      THEN ControlActionsDone := TRUE;
+                 End;
 
           END;
       End;
@@ -1368,6 +1410,7 @@ begin
 
    SolutionInitialized := FALSE;   // reinitialize solution when mode set (except dynamics)
    PreserveNodeVoltages := FALSE;  // don't do this unless we have to
+   SampleTheMeters := FALSE;
 
    // Reset defaults for solution modes
    Case Dynavars.SolutionMode of
@@ -1376,6 +1419,7 @@ begin
        DAILYMODE:     Begin
                            DynaVars.h    := 3600.0;
                            NumberOfTimes := 24;
+                           SampleTheMeters := TRUE;
                       End;
        SNAPSHOT:      Begin
                            IntervalHrs   := 1.0;
@@ -1385,6 +1429,7 @@ begin
                            IntervalHrs   := 1.0;
                            DynaVars.h    := 3600.0;
                            NumberOfTimes := 8760;
+                           SampleTheMeters := TRUE;
                       End;
        DUTYCYCLE:     Begin
                            DynaVars.h  := 1.0;
@@ -1401,9 +1446,9 @@ begin
                            DynaVars.h    := 3600.0;
                            NumberOfTimes := 1;  // just one time step per Solve call expected
                       End;
-       MONTECARLO1:   Begin IntervalHrs    := 1.0;  End;
-       MONTECARLO2:   Begin DynaVars.h     := 3600.0;   End;
-       MONTECARLO3:   Begin IntervalHrs    := 1.0;   End;
+       MONTECARLO1:   Begin IntervalHrs    := 1.0;  SampleTheMeters := TRUE; End;
+       MONTECARLO2:   Begin DynaVars.h     := 3600.0;  SampleTheMeters := TRUE; End;
+       MONTECARLO3:   Begin IntervalHrs    := 1.0; SampleTheMeters := TRUE;  End;
        MONTEFAULT:    Begin IsDynamicModel := TRUE;  END;
        FAULTSTUDY:    Begin
                             IsDynamicModel := TRUE;
@@ -1411,10 +1456,12 @@ begin
        LOADDURATION1: Begin
                            DynaVars.h := 3600.0;
                            ActiveCircuit.TrapezoidalIntegration := TRUE;
+                           SampleTheMeters := TRUE;
                       End;
        LOADDURATION2: Begin
                            DynaVars.intHour := 1;
                            ActiveCircuit.TrapezoidalIntegration := TRUE;
+                           SampleTheMeters := TRUE;
                       End;
        AUTOADDFLAG :  Begin
                            IntervalHrs := 1.0;
@@ -1434,7 +1481,7 @@ begin
                           IsHarmonicModel := TRUE;
                           LoadModel       := ADMITTANCE;
                           PreserveNodeVoltages := TRUE;  // need to do this in case Y changes during this mode
-       End;
+                      End;
    End;
 
    {Moved here 9-8-2007 so that mode is changed before reseting monitors, etc.}
@@ -1624,6 +1671,11 @@ begin
       EnergyMeterClass.ResetAll;  // force any previous year data to complete
 end;
 
+procedure TSolutionObj.Set_Total_Time(const Value: Double);
+begin
+      Total_Time_Elapsed :=  Value;
+end;
+
 procedure TSolutionObj.SaveVoltages;
 
 Var F:TextFile;
@@ -1681,18 +1733,18 @@ BEGIN
  {Note: NodeV[0] = 0 + j0 always.  Therefore, pass the address of the element 1 of the array.
  }
   Try
-    // new function to log KLUSolve.DLL function calls
+    // new function to log KLUSolve.DLL function calls; same information as stepping through in Delphi debugger
     // SetLogFile ('KLU_Log.txt', 1);
-    RetCode :=  SolveSparseSet(hY, @V^[1], @Currents^[1]);  // Solve for present InjCurr
+    RetCode := SolveSparseSet(hY, @V^[1], @Currents^[1]);  // Solve for present InjCurr
     // new information functions
-    // GetFlops (hY, @dRes);
-    // GetRGrowth (hY, @dRes);
+    GetFlops (hY, @dRes);
+    GetRGrowth (hY, @dRes);
     GetRCond (hY, @dRes);
     // GetCondEst (hY, @dRes); // this can be expensive
-    // GetSize (hY, @iRes);
+    GetSize (hY, @iRes);
     GetNNZ (hY, @iRes);
     GetSparseNNZ (hY, @iRes);
-    // GetSingularCol (hY, @iRes);
+    GetSingularCol (hY, @iRes);
   Except
     On E:Exception Do Raise  EEsolv32Problem.Create('Error Solving System Y Matrix.  Sparse matrix solver reports numerical error: '
                    +E.Message);
@@ -1705,6 +1757,17 @@ END;
 procedure TSolutionObj.Update_dblHour;
 begin
      DynaVars.dblHour := DynaVars.intHour + dynavars.t/3600.0;
+end;
+
+procedure TSolutionObj.UpdateLoopTime;
+begin
+
+// Update Loop time is called from end of time step cleanup
+// Timer is based on beginning of SolveSnap time
+
+   {$IFNDEF FPC}QueryPerformanceCounter(LoopEndTime);{$ENDIF}
+   Step_Time_Elapsed  := ((LoopEndtime-SolveStartTime)/CPU_Freq)*1000000;
+
 end;
 
 procedure TSolutionObj.UpdateVBus;

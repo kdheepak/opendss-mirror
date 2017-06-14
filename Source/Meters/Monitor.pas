@@ -18,6 +18,7 @@ unit Monitor;
    2-19-08 Added SampleCount
    01-19-13 Added flicker meter mode
    08-18-15 Added Solution monitor mode
+   08-10-16 Added mode 6 for storing capacitor switching
 }
 
 {
@@ -104,6 +105,7 @@ TYPE
 
        Procedure ResetAll;   Override;
        Procedure SampleAll;  Override;  // Force all monitors to take a sample
+       Procedure SampleAllMode5;  // Sample just Mode 5 monitors
        Procedure SaveAll;    Override;   // Force all monitors to save their buffers to disk
        Procedure PostProcessAll;
        Procedure TOPExport(Objname:String);
@@ -194,7 +196,8 @@ implementation
 USES
 
     ParserDel, DSSClassDefs, DSSGlobals, Circuit, CktElement,Transformer, PCElement,
-    Sysutils, ucmatrix, showresults, mathUtil, PointerList, TOPExport, Dynamics, PstCalc;
+    Sysutils, ucmatrix, showresults, mathUtil, PointerList, TOPExport, Dynamics, PstCalc,
+    Capacitor;
 
 CONST
     SEQUENCEMASK = 16;
@@ -203,7 +206,7 @@ CONST
     MODEMASK = 15;
 
     NumPropsThisClass = 7;
-    NumSolutionVars = 10;
+    NumSolutionVars = 12;
 
 VAR
     StrBuffer:TMonitorStrBuffer;
@@ -259,6 +262,7 @@ Begin
                     '    Flicker level at simulation time step, Pst at 10-minute time step.' +CRLF+
                     '5 = Solution variables (Iterations, etc).' +CRLF+CRLF+
                     'Normally, these would be actual phasor quantities from solution.' + CRLF+
+                    '6 = Capacitor Switching (Capacitors only)'+CRLF+
                     'Combine with adders below to achieve other results for terminal quantities:' + CRLF+
                     '+16 = Sequence quantities' + CRLF+
                     '+32 = Magnitude only' + CRLF+
@@ -380,11 +384,27 @@ Procedure TDSSMonitor.SampleAll;  // Force all monitors in the circuit to take a
 
 VAR
    Mon:TMonitorObj;
-
+// sample all monitors except mode 5 monitors
 Begin
       Mon := ActiveCircuit.Monitors.First;
       WHILE Mon<>Nil DO  Begin
-          If Mon.enabled Then Mon.TakeSample;
+          If Mon.enabled Then
+             If Mon.Mode <> 5 then Mon.TakeSample;
+          Mon := ActiveCircuit.Monitors.Next;
+      End;
+End;
+
+{--------------------------------------------------------------------------}
+Procedure TDSSMonitor.SampleAllMode5;  // Force all mode=5 monitors in the circuit to take a sample
+
+VAR
+   Mon:TMonitorObj;
+// sample all Mode 5 monitors except monitors
+Begin
+      Mon := ActiveCircuit.Monitors.First;
+      WHILE Mon<>Nil DO  Begin
+          If Mon.enabled Then
+             If Mon.Mode = 5 then Mon.TakeSample;
           Mon := ActiveCircuit.Monitors.Next;
       End;
 End;
@@ -563,22 +583,30 @@ VAR
 
 Begin
          ValidMonitor := FALSE;
-         Devindex := GetCktElementIndex(ElementName); // Global function
-         IF DevIndex>0 THEN Begin  // Monitored element must already exist
+         Devindex := GetCktElementIndex(ElementName);                   // Global function
+         IF DevIndex>0 THEN Begin                                       // Monitored element must already exist
              MeteredElement := ActiveCircuit.CktElements.Get(DevIndex);
              Case (Mode and MODEMASK) of
-                2: Begin   // Must be transformer
+                2: Begin                                                // Must be transformer
                           If (MeteredElement.DSSObjType And CLASSMASK) <> XFMR_ELEMENT Then Begin
                             DoSimpleMsg(MeteredElement.Name + ' is not a transformer!', 663);
                             Exit;
                           End;
                    End;
-                3: Begin   // Must be PCElement
+                3: Begin                                                // Must be PCElement
                           If (MeteredElement.DSSObjType And BASECLASSMASK) <> PC_ELEMENT Then Begin
                             DoSimpleMsg(MeteredElement.Name + ' must be a power conversion element (Load or Generator)!', 664);
                             Exit;
                           End;
                    End;
+                6: begin                                                // Checking Caps Tap
+                          If (MeteredElement.DSSObjType And CLASSMASK) <> CAP_ELEMENT Then Begin
+                            DoSimpleMsg(MeteredElement.Name + ' is not a capacitor!', 2016001);
+                            Exit;
+                          End;
+                   end;
+
+
 
              End;
 
@@ -681,6 +709,7 @@ VAR
     NumVI       :Integer;
     RecordSize  :Integer;
     strPtr      :pANSIchar;
+    Str_Temp    :AnsiString;
 
 Begin
   Try
@@ -717,7 +746,7 @@ Begin
         End;
      5: Begin
              RecordSize := NumSolutionVars;
-             strLcat(strPtr, pAnsichar('Iteration, '), Sizeof(TMonitorStrBuffer));
+             strLcat(strPtr, pAnsichar('TotalIterations, '), Sizeof(TMonitorStrBuffer));
              strLcat(strPtr, pAnsichar('ControlIteration, '), Sizeof(TMonitorStrBuffer));
              strLcat(strPtr, pAnsichar('MaxIterations, '), Sizeof(TMonitorStrBuffer));
              strLcat(strPtr, pAnsichar('MaxControlIterations, '), Sizeof(TMonitorStrBuffer));
@@ -727,7 +756,18 @@ Begin
              strLcat(strPtr, pAnsichar('Mode, '), Sizeof(TMonitorStrBuffer));
              strLcat(strPtr, pAnsichar('Frequency, '), Sizeof(TMonitorStrBuffer));
              strLcat(strPtr, pAnsichar('Year, '), Sizeof(TMonitorStrBuffer));
-        End
+             strLcat(strPtr, pAnsichar('SolveSnap_uSecs, '), Sizeof(TMonitorStrBuffer));
+             strLcat(strPtr, pAnsichar('TimeStep_uSecs, '), Sizeof(TMonitorStrBuffer));
+        End;
+     6: Begin
+              RecordSize := TCapacitorObj(MeteredElement).NumSteps;     // Capacitor Taps
+              for i := 1 to RecordSize do
+                begin
+                  Str_Temp  :=  AnsiString('Step_' + inttostr(i) + ' ');
+                  strLcat(strPtr, pAnsichar(Str_Temp), Sizeof(TMonitorStrBuffer));
+                end;
+
+        End;
      Else Begin
          // Compute RecordSize
          // Use same logic as in TakeSample Method
@@ -1029,20 +1069,32 @@ Begin
      5: Begin
             (* Capture Solution Variables *)
             With ActiveCircuit.Solution Do Begin
-             SolutionBuffer^[1] := Iteration;
-             SolutionBuffer^[2] := ControlIteration;
-             SolutionBuffer^[3] := MaxIterations;
-             SolutionBuffer^[4] := MaxControlIterations;
-             If ConvergedFlag then SolutionBuffer^[5] := 1 else SolutionBuffer^[3] := 0;
-             SolutionBuffer^[6] := IntervalHrs;
-             SolutionBuffer^[7] := SolutionCount;
-             SolutionBuffer^[8] := Mode;
-             SolutionBuffer^[9] := Frequency;
-             SolutionBuffer^[10] := Year;
+             SolutionBuffer^[1]   :=  Iteration;
+             SolutionBuffer^[2]   :=  ControlIteration;
+             SolutionBuffer^[3]   :=  MaxIterations;
+             SolutionBuffer^[4]   :=  MaxControlIterations;
+             If ConvergedFlag then SolutionBuffer^[5] := 1 else SolutionBuffer^[5] := 0;
+             SolutionBuffer^[6]   :=  IntervalHrs;
+             SolutionBuffer^[7]   :=  SolutionCount;
+             SolutionBuffer^[8]   :=  Mode;
+             SolutionBuffer^[9]   :=  Frequency;
+             SolutionBuffer^[10]  :=  Year;
+             SolutionBuffer^[11]  :=  Time_Solve;
+             SolutionBuffer^[12]  :=  Time_Step;
             End;
 
         End;
 
+     6: Begin     // Monitor Transformer Tap Position
+
+              With TCapacitorObj(MeteredElement) Do Begin
+                  for i := 1 to NumSteps do
+                    begin
+                      AddDblToBuffer(States[i]);
+                    end;
+              End;
+              Exit;  // Done with this mode now.
+        End;
      Else Exit  // Ignore invalid mask
 
    End;

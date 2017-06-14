@@ -27,7 +27,8 @@ Notes:
 INTERFACE
 
 USES
-     System.Generics.Collections, Command, ControlClass, ControlElem, CktElement, DSSClass, PVSystem, Arraydef, ucomplex,
+     {$IFDEF FPC}gqueue{$ELSE}System.Generics.Collections{$ENDIF},
+     Command, ControlClass, ControlElem, CktElement, DSSClass, PVSystem, Arraydef, ucomplex,
      utilities, XYcurve, Dynamics, PointerList, Classes, StrUtils;
 
 TYPE
@@ -44,7 +45,8 @@ TYPE
 
 
 type
-  TRollAvgWindow = class(TObject)
+
+  TRollAvgWindow = class(TObject)
 
 
 private
@@ -145,7 +147,6 @@ end;
             FRiseFallLimit : Double;
             FPresentVpu: Array of Double;
             FvoltwattDeltaVTolerance: Double; // tolerance of voltage change from one solution to the
-            LPFWattspu : Double;
             FPendingChange: Array of Integer;
             FFlagROCOnly : Array of Boolean;
 
@@ -190,7 +191,10 @@ end;
             FVoltwattYAxis: Integer; // 1 = %Pmpp, 0 = %Available power
             FVoltageChangeTolerance: Double;
             FVarChangeTolerance: Double;
+            FActivePChangeTolerance: Double;
             FWithinTol: Array of Boolean;
+            FWithinTolVV: Array of Boolean;
+            FWithinTolVW: Array of Boolean;
             FROCEvaluated: Array of Boolean;
             FHitkVALimit: Array of Boolean;
             FHitkvarLimit: Array of Boolean;
@@ -205,7 +209,9 @@ end;
      protected
             PROCEDURE Set_Enabled(Value:Boolean);Override;
      public
+            {$IFNDEF FPC}
             MyMemoryManagerState: System.TMemoryManagerState;
+            {$ENDIF}
             constructor Create(ParClass:TDSSClass; const InvControlName:String);
             destructor  Destroy; override;
 
@@ -336,7 +342,7 @@ Begin
 
 
      PropertyHelp[3] := 'Combination of Modes with which the InvControl will control the PVSystem(s) specified in PVSystemList. '+CRLF+CRLF+
-                        'Must be a combination of the following: {''*, VV_VW | VV_DRC}. Default is to not set this property, in which case the single control mode in Mode is active.  ' +
+                        'Must be a combination of the following: {VV_VW | VV_DRC}. Default is to not set this property, in which case the single control mode in Mode is active.  ' +
                          CRLF+CRLF+'In combined VV_VW mode, both volt-var and volt-watt control modes are active simultaneously.  See help individually for volt-var mode and volt-watt mode in Mode property.'+
                          CRLF+'Note that the PVSystem will attempt to achieve both the volt-watt and volt-var set-points based on the capabilities of the inverter in the PVSystem (kVA rating), any limits set on maximum active power,' +
                          CRLF+', any limits set on maximum reactive power. '+
@@ -476,7 +482,7 @@ Begin
 
      PropertyHelp[22] := '{Yes/True* | No/False} Default is YES for InvControl. Log control actions to Eventlog.';
 
-     PropertyHelp[23] := 'Required for any mode that has VOLTVAR in it. Defaults to VARAVAL_WATTS. Possible Settings: VARAVAL_WATTS*|VARMAX_VARS|VARMAX_WATTS'+CRLF+CRLF+
+     PropertyHelp[23] := 'Required for any mode that has VOLTVAR in it. Defaults to VARAVAL_WATTS. Possible Settings: VARAVAL_WATTS|VARMAX_VARS|VARMAX_WATTS'+CRLF+CRLF+
                          'When the VOLTVAR mode is active (alone or in conjunction with other modes, this property defines the reference for the percent value given on the y-axis of the volt-var curve.'+CRLF+CRLF+
                          'VARAVAL_WATTS: When set to VARAVAL_WATTS the units of the y-axis for the volt-var curve are given in percent of available reactive power given present active power output and the kVA rating of the PVSystem.'+CRLF+
                          'Active power output is given precedence over reactive power output/absorption, so the reactive power output/absorption possibly may not achieve the desired available reactive power level as defined by the volt-var curve if little headroonm.'+CRLF+CRLF+
@@ -700,6 +706,8 @@ Begin
 
         CondOffset[i]              := OtherInvControl.CondOffset[i];
         FWithinTol[i]              := OtherInvControl.FWithinTol[i];
+        FWithinTolVV[i]              := OtherInvControl.FWithinTolVV[i];
+        FWithinTolVW[i]              := OtherInvControl.FWithinTolVW[i];
         FROCEvaluated[i]           := OtherInvControl.FROCEvaluated[i];
         FFinalpuPmpp[i]             := OtherInvControl.FFinalpuPmpp[i];
         FFinalkvar[i]              := OtherInvControl.FFinalkvar[i];
@@ -851,12 +859,14 @@ Begin
      FVoltwattYAxis           := 1;
      FVoltageChangeTolerance  :=0.0001;
      FVarChangeTolerance      :=0.025;
-
+     FActivePChangeTolerance  :=0.01;
      RateofChangeMode         := INACTIVE;
      FLPFTau                  := 0.001;
 
      FlagChangeCurve          := nil;
      FWithinTol               := nil;
+     FWithinTolVV             := nil;
+     FWithinTolVW             := nil;
      FROCEvaluated            := nil;
      FHitkVALimit             := nil;
      FHitkvarLimit            := nil;
@@ -932,6 +942,8 @@ Begin
      Finalize(FPriorvarspu);
      Finalize(FLPFTime);
      Finalize(FWithinTol);
+     Finalize(FWithinTolVV);
+     Finalize(FWithinTolVW);
      Finalize(FROCEvaluated);
      Finalize(FFinalpuPmpp);
      Finalize(FFinalkvar);
@@ -971,6 +983,8 @@ Begin
          ControlledElement[i].ActiveTerminalIdx := 1; // Make the 1 st terminal active
          Nphases := ControlledElement[i].NPhases;
          Nconds  := Nphases;
+         FRollAvgWindow[i].BuffLength    := FRollAvgWindowLength; // TEMc
+         FDRCRollAvgWindow[i].BuffLength := FDRCRollAvgWindowLength;
          if (ControlledElement[i] <> Nil) then
          With ControlledElement[i] Do
          begin
@@ -1075,7 +1089,7 @@ VAR
 
   k                                         :Integer;
   SMonitoredElement                         :Complex;
-  Qtemp,PTemp                               :Double;
+  Qtemp,PTemp,QTemp2                        :Double;
   pctVV,pctDRC,QTemporig                    :Double;
 
   // local pointer to current PVSystem element
@@ -1102,12 +1116,15 @@ BEGIN
               CalcVoltVar_vars(k);
               CalcDRC_vars(k);
               QTemp  := QNew[k]+QDRCNew[k];
+
+
               QTemporig := QTemp;
               if(QTemp = 0) then
                 begin
                   if abs(QTemp) > abs(PVSys.kvarLimit) then
                     QTemp := sign(QTemp)*1.0*PVSys.kvarLimit;
                   PVSys.Presentkvar := QTemp;
+                  QTemp2 := PVSys.Presentkvar;
               Qoutputpu[k]    := PVSys.Presentkvar / QHeadroom[k];
 
               If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
@@ -1117,40 +1134,47 @@ BEGIN
               ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
               FAvgpVuPrior[k] := FPresentVpu[k];
               QOld[k] := QTemp;
-              WriteDLLDebugFile(Format('%g, %d, %.6g, %.6g, %.6g, %s', [ActiveCircuit.Solution.Dynavars.t, ActiveCircuit.Solution.ControlIteration, QOldVV[k],QoldDRC[k],QTemp, 'after limit (set-point).']));
-              Set_PendingChange(NONE,k);
-              exit;
-                end;
+
+
+//              WriteDLLDebugFile(Format('%g, %d, %.6g, %.6g, %.6g, %s', [ActiveCircuit.Solution.Dynavars.t, ActiveCircuit.Solution.ControlIteration, QOldVV[k],QoldDRC[k],QTemp, 'after limit (set-point).']));
+
+              Set_PendingChange(NONE,k);
+
+              exit;
+
+                end;
 
 
               pctVV  := QNew[k]/QTemp;
               pctDRC := QDRCNew[k]/QTemp;
               WriteDLLDebugFile(Format('%g, %d, %.6g, %.6g, %.6g, %s', [ActiveCircuit.Solution.Dynavars.t, ActiveCircuit.Solution.ControlIteration, QNew[k],QDRCNew[k], QTemp, 'before limit.']));
+
               //Respect the PVSystem's maximum kvar limit, first
-              if abs(Qtemp) > abs(PVSys.kvarLimit) then
+              if abs(Qtemp2) > abs(PVSys.kvarLimit) then
                 begin
-                  Qtemp := sign(Qtemp)*0.99*PVSys.kvarLimit;
-                  QDesiredpu[k] := pctVV*(Qtemp/QTemporig)*QDesiredpu[k];
-                  QDRCDesiredpu[k] := pctDRC*(Qtemp/QTemporig)*QDRCDesiredpu[k];
+                  Qtemp2 := sign(Qtemp)*0.99*PVSys.kvarLimit;
+                  QDesiredpu[k] := pctVV*(Qtemp2/QTemporig)*QDesiredpu[k];
+                  QDRCDesiredpu[k] := pctDRC*(Qtemp2/QTemporig)*QDRCDesiredpu[k];
                   FHitkvarLimit[k] := True;
                 end;
-              PVSys.SetNominalPVSystemOuput;
+
+              PVSys.SetNominalPVSystemOuput;
               PTemp := PVSys.PresentkW;
               // if the desired kW and desired kvar exceed the kva rating of the PVSystem's inverter then...
-              if SQRT(Sqr(Qtemp)+Sqr(PTemp)) > PVSys.kVARating then
+              if SQRT(Sqr(QTemp2)+Sqr(PTemp)) > PVSys.kVARating then
                 begin
                   //...if watts have precedence, reduce the reactive power to not exceed the kva rating
                   if(FVV_ReacPower_ref = 'VARAVAL_WATTS') or (FVV_ReacPower_ref = 'VARMAX_WATTS') then
                     begin
-                      Qtemp := 0.99*sign(Qtemp)*SQRT(Sqr(PVSys.kVARating)-Sqr(PTemp));
-                      QDesiredpu[k] := pctVV*(Qtemp/QTemporig)*QDesiredpu[k];
-                      QDRCDesiredpu[k] := pctDRC*(Qtemp/QTemporig)*QDRCDesiredpu[k];
+                      Qtemp2 := 0.99*sign(Qtemp2)*SQRT(Sqr(PVSys.kVARating)-Sqr(PTemp));
+                      Qnew[k] := Qtemp2;
+                      PVSys.Presentkvar := Qnew[k];
                     end
 
                   //...else, vars have precedence, reduce the active power to not exceed the kva rating
                   else
                     begin
-                      PTemp := 0.99*sign(PTemp)*SQRT(Sqr(PVSys.kVARating)-Sqr(Qtemp));
+                      PTemp := 0.99*sign(PTemp)*SQRT(Sqr(PVSys.kVARating)-Sqr(QTemp2));
                       // Set the active power
                       FFinalpuPmpp[k] :=PTemp/PVSys.Pmpp;
                       PVSys.VWmode  := TRUE;
@@ -1164,7 +1188,9 @@ BEGIN
                               PNew[k] :=FFinalpuPmpp[k];
 
                               If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+','+PVSys.Name+',',
-                               Format('**VV_DRC VARMAX_VARS mode limited PVSystem output level to**, puPmpp= %.5g, PriorWatts= %.5g', [PVSys.puPmpp,FPriorWattspu[k]]));
+                               Format('**VOLTVAR VARMAX_VARS mode limited PVSystem output level to**, puPmpp= %.5g, PriorWatts= %.5g', [PVSys.puPmpp,FPriorWattspu[k]]));
+                              Qnew[k] := Qtemp2;
+                              PVSys.Presentkvar := Qnew[k];
 
                               ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
                               FAvgpVuPrior[k] := FPresentVpu[k];
@@ -1173,7 +1199,7 @@ BEGIN
                         end;
                     end;
                   FHitkvaLimit[k] := True;
-                end;
+                end;                           
 
 
               // Set the reactive power, if it is different than the present PVSystem kvar setting
@@ -1199,9 +1225,13 @@ BEGIN
               ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
               FAvgpVuPrior[k] := FPresentVpu[k];
               QOld[k] := QTemp;
-              QOldVV[k] := pctVV*QTemp;
-              QoldDRC[k] := pctDRC*QTemp;
-          end;
+
+              QOldVV[k] := pctVV*QTemp;
+
+              QoldDRC[k] := pctDRC*QTemp;
+
+
+          end;
 
 		if(FFlagROCOnly[k] = True) then
           begin
@@ -1220,7 +1250,7 @@ BEGIN
                       Qoutputpu[k] := PVSys.Presentkvar / QHeadroom[k];
                       If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
                                      Format('VV_DRC mode, LPF set PVSystem output var level to**, kvar= %.5g',
-                                     [PVSys.Presentkvar,FPresentVpu[k]]));
+                                     [Qnew[k]]));
                       FAvgpVuPrior[k] := FPresentVpu[k];
                       QOld[k] := QNew[k];
                       ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
@@ -1242,7 +1272,7 @@ BEGIN
                       Qoutputpu[k] := Qnew[k] / QHeadroom[k];
                       If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
                                      Format('VV_DRC mode, RISEFALL set PVSystem output var level to**, kvar= %.5g',
-                                     [PVSys.Presentkvar,FPresentVpu[k]]));
+                                     [Qnew[k]]));
                       FAvgpVuPrior[k] := FPresentVpu[k];
                       QOld[k] := QNew[k];
                       ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
@@ -1265,7 +1295,7 @@ BEGIN
                   Qnew[k] := sign(QNew[k])*0.99*PVSys.kvarLimit;
                   FHitkvarLimit[k] := True;
                 end;
-
+              QTemp2 := Qnew[k];
               //Convert output from CalcVoltWatt_pu to kW
               PVSys.VWmode  := TRUE;
               PVSys.VWYAxis := FVoltwattYAxis;
@@ -1275,9 +1305,54 @@ BEGIN
                   if (RateofChangeMode=INACTIVE) or (ActiveCircuit.Solution.Dynavars.dblHour = 0.0) then
                       if(FVoltwattYAxis = 0) or (FVoltwattYAxis = 1) then
                         begin
+                    Ptemp := min(PVSys.PVSystemVars.PanelkW*PVSys.PVSystemVars.EffFactor,FFinalpuPmpp[k]*PVSys.Pmpp);
+                    if SQRT(Sqr(QTemp2)+Sqr(PTemp)) > PVSys.kVARating then
+                      begin
+                        //...if watts have precedence, reduce the reactive power to not exceed the kva rating
+                        if(FVV_ReacPower_ref = 'VARAVAL_WATTS') or (FVV_ReacPower_ref = 'VARMAX_WATTS') then
+                          begin
+                            Qtemp2 := 0.99*sign(Qtemp2)*SQRT(Sqr(PVSys.kVARating)-Sqr(PTemp));
+                            Qnew[k] := Qtemp2;
+                            PVSys.Presentkvar := Qnew[k];
+                          end
+
+                        //...else, vars have precedence, reduce the active power to not exceed the kva rating
+                        else
+                          begin
+                            PTemp := 0.99*sign(PTemp)*SQRT(Sqr(PVSys.kVARating)-Sqr(QTemp2));
+                            // Set the active power
+                            FFinalpuPmpp[k] :=PTemp/PVSys.Pmpp;
+                            PVSys.VWmode  := TRUE;
+                            PVSys.VWYAxis := FVoltwattYAxis;
+                            PVSys.ActiveTerminalIdx := 1; // Set active terminal of PVSystem to terminal 1
+                            if (FFlagROCOnly[k] = False) then
+                              begin
+                                if (RateofChangeMode=INACTIVE) or (ActiveCircuit.Solution.Dynavars.dblHour = 0.0) then
+                                  begin
+                                    PVSys.puPmpp :=FFinalpuPmpp[k];
+                                    PNew[k] :=FFinalpuPmpp[k];
+
+                                    If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+','+PVSys.Name+',',
+                                     Format('**VOLTVAR VARMAX_VARS mode limited PVSystem output level to**, puPmpp= %.5g, PriorWatts= %.5g', [PVSys.puPmpp,FPriorWattspu[k]]));
+                                    Qnew[k] := Qtemp2;
+                                    PVSys.Presentkvar := Qnew[k];
+
+                                    ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
+                                    FAvgpVuPrior[k] := FPresentVpu[k];
+                                    POld[k] := PVSys.puPmpp;
+                                end;
+                              end;
+                          end;
+                        FHitkvaLimit[k] := True;
+                      end;
+
+
+
+
                           PVSys.puPmpp :=FFinalpuPmpp[k];
                           PVSys.SetNominalPVSystemOuput;
                           ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
+                          PNew[k] :=FFinalpuPmpp[k];
                         end
                       else
                         begin
@@ -1285,21 +1360,50 @@ BEGIN
                         end;
                 end;
 
-                PTemp := PVSys.PresentkW;
               // if the desired kW and desired kvar exceed the kva rating of the PVSystem's inverter then...
-              if SQRT(Sqr(QNew[k])+Sqr(PTemp)) > PVSys.kVARating then
+              PVSys.SetNominalPVSystemOuput;
+              PTemp := PVSys.PresentkW;
+              // if the desired kW and desired kvar exceed the kva rating of the PVSystem's inverter then...
+              if SQRT(Sqr(QTemp2)+Sqr(PTemp)) > PVSys.kVARating then
                 begin
                   //...if watts have precedence, reduce the reactive power to not exceed the kva rating
                   if(FVV_ReacPower_ref = 'VARAVAL_WATTS') or (FVV_ReacPower_ref = 'VARMAX_WATTS') then
-                    QNew[k] := 0.99*sign(QNew[k])*SQRT(Sqr(PVSys.kVARating)-Sqr(PTemp))
+                    begin
+                      Qtemp2 := 0.99*sign(Qtemp2)*SQRT(Sqr(PVSys.kVARating)-Sqr(PTemp));
+                      Qnew[k] := Qtemp2;
+                      PVSys.Presentkvar := Qnew[k];
+                    end
+
                   //...else, vars have precedence, reduce the active power to not exceed the kva rating
-                  else PTemp := 0.99*sign(PTemp)*SQRT(Sqr(PVSys.kVARating)-Sqr(QNew[k]));
+                  else
+                    begin
+                      PTemp := 0.99*sign(PTemp)*SQRT(Sqr(PVSys.kVARating)-Sqr(QTemp2));
+                      // Set the active power
+                      FFinalpuPmpp[k] :=PTemp/PVSys.Pmpp;
+                      PVSys.VWmode  := TRUE;
+                      PVSys.VWYAxis := FVoltwattYAxis;
+                      PVSys.ActiveTerminalIdx := 1; // Set active terminal of PVSystem to terminal 1
+                      if (FFlagROCOnly[k] = False) then
+                        begin
+                          if (RateofChangeMode=INACTIVE) or (ActiveCircuit.Solution.Dynavars.dblHour = 0.0) then
+                            begin
+                              PVSys.puPmpp :=FFinalpuPmpp[k];
+                              PNew[k] :=FFinalpuPmpp[k];
+
+                              If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+','+PVSys.Name+',',
+                               Format('**VOLTVAR VARMAX_VARS mode limited PVSystem output level to**, puPmpp= %.5g, PriorWatts= %.5g', [PVSys.puPmpp,FPriorWattspu[k]]));
+                              Qnew[k] := Qtemp2;
+                              PVSys.Presentkvar := Qnew[k];
+
+                              ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
+                              FAvgpVuPrior[k] := FPresentVpu[k];
+                              POld[k] := PVSys.puPmpp;
+                          end;
+                        end;
+                    end;
                   FHitkvaLimit[k] := True;
                 end;
 
-
-
-              // Set the reactive power and set the active power on the PVSystem
 
               // Set the reactive power, if it is different than the present PVSystem kvar setting
               PVSys.VWmode := FALSE;
@@ -1312,15 +1416,22 @@ BEGIN
                     Qnew[k] := sign(QNew[k])*1.0*PVSys.kvarLimit;
                   PVSys.Presentkvar := Qnew[k];
                 end;
+              //Respect the PVSystem's maximum kvar limit
+              if abs(Qnew[k]) > abs(PVSys.kvarLimit) then
+                begin
+                  Qnew[k] := sign(Qnew[k])*0.99*PVSys.kvarLimit;
+                  FHitkvarLimit[k] := True;
+                end;
 
+              PVSys.Presentkvar := Qnew[k];
               Qoutputpu[k] := PVSys.Presentkvar / QHeadroom[k];
               If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
                              Format('**VV_VW mode set PVSystem output var level to**, kvar= %.5g',
-                             [PVSys.Presentkvar,FPresentVpu[k]]));
+                             [Qnew[k]]));
 
               ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
               FAvgpVuPrior[k] := FPresentVpu[k];
-              QOld[k] := QNew[k];
+              QOldVV[k] := QNew[k];
 
               // Set the active power
               FFinalpuPmpp[k] :=PTemp/PVSys.Pmpp;
@@ -1335,7 +1446,7 @@ BEGIN
                       PNew[k] :=FFinalpuPmpp[k];
 
                       If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+','+PVSys.Name+',',
-                       Format('**VV_VW mode set PVSystem output level to**, puPmpp= %.5g, PriorWatts= %.5g', [PVSys.puPmpp,FPriorWattspu[k]]));
+                       Format('**VV_VW mode set PVSystem output level to**, puPmpp= %.5g, PriorWatts= %.5g', [PVSys.puPmpp,POld[k]]));
 
                       ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
                       FAvgpVuPrior[k] := FPresentVpu[k];
@@ -1361,7 +1472,7 @@ BEGIN
                       Qoutputpu[k] := PVSys.Presentkvar / QHeadroom[k];
                       If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
                                      Format('VV_VW mode, LPF set PVSystem output var level to**, kvar= %.5g',
-                                     [PVSys.Presentkvar,FPresentVpu[k]]));
+                                     [Qnew[k]]));
                       FAvgpVuPrior[k] := FPresentVpu[k];
                       QOld[k] := QNew[k];
                       ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
@@ -1369,9 +1480,10 @@ BEGIN
               end;
 
             // Apply Rise/Fall volt-var
-            if (RateofChangeMode = RISEFALL) and ((ActiveCircuit.Solution.DynaVars.dblHour*3600.0 / ActiveCircuit.Solution.DynaVars.h)>2.0) then
+            if (RateofChangeMode = RISEFALL) and (ActiveCircuit.Solution.Dynavars.dblHour > 0.0) then
               begin
-                Qtemp := CalcRF(k, 'VARS', PVSys);
+
+                Qtemp := CalcRF(k, 'VARS', PVSys);
                   if(Qtemp <> -999.99) then
                     begin
                       if abs(Qtemp) > abs(PVSys.kvarLimit) then
@@ -1382,13 +1494,14 @@ BEGIN
                       Qoutputpu[k] := Qnew[k] / QHeadroom[k];
                       If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
                                      Format('VV_VW mode, RISEFALL set PVSystem output var level to**, kvar= %.5g',
-                                     [GetPropertyValue(2), PVSys.Presentkvar,FPresentVpu[k]]));
+                                     [Qnew[k]]));
                       FAvgpVuPrior[k] := FPresentVpu[k];
                       QOld[k] := QNew[k];
                       ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
                     end;
               end;
-            // rate of change LPF - watts
+
+            // rate of change LPF - watts
             if (RateofChangeMode = LPF) and (ActiveCircuit.Solution.Dynavars.dblHour > 0.0) then
               begin
 				FROCEvaluated[k] := True;
@@ -1431,9 +1544,11 @@ BEGIN
                     end;
                       // Force recalc of power parms
                       Set_PendingChange(NONE,k);
-              end
 
-            end;
+              end
+
+
+            end;
           Set_PendingChange(NONE,k);
         end;
 
@@ -1452,18 +1567,62 @@ BEGIN
               If PVSys.Presentkvar <> Qnew[k] Then
                 begin
                   if abs(QNew[k]) > abs(PVSys.kvarLimit) then
+                     begin
                     Qnew[k] := sign(QNew[k])*1.0*PVSys.kvarLimit;
+                    FHitkvarLimit[k] := True;
+                    end;
                 PVSys.Presentkvar := Qnew[k];
-
-
+                QTemp2 := Qnew[k];
                 end;
 
+              PVSys.SetNominalPVSystemOuput;
+              PTemp := PVSys.PresentkW;
+              // if the desired kW and desired kvar exceed the kva rating of the PVSystem's inverter then...
+              if SQRT(Sqr(QTemp2)+Sqr(PTemp)) > PVSys.kVARating then
+                begin
+                  //...if watts have precedence, reduce the reactive power to not exceed the kva rating
+                  if(FVV_ReacPower_ref = 'VARAVAL_WATTS') or (FVV_ReacPower_ref = 'VARMAX_WATTS') then
+                    begin
+                      Qtemp2 := 0.99*sign(Qtemp2)*SQRT(Sqr(PVSys.kVARating)-Sqr(PTemp));
+                      Qnew[k] := Qtemp2;
+                      PVSys.Presentkvar := Qnew[k];
+                    end
+
+                  //...else, vars have precedence, reduce the active power to not exceed the kva rating
+                  else
+                    begin
+                      PTemp := 0.99*sign(PTemp)*SQRT(Sqr(PVSys.kVARating)-Sqr(QTemp2));
+                      // Set the active power
+                      FFinalpuPmpp[k] :=PTemp/PVSys.Pmpp;
+                      PVSys.VWmode  := TRUE;
+                      PVSys.VWYAxis := FVoltwattYAxis;
+                      PVSys.ActiveTerminalIdx := 1; // Set active terminal of PVSystem to terminal 1
+                      if (FFlagROCOnly[k] = False) then
+                        begin
+                          if (RateofChangeMode=INACTIVE) or (ActiveCircuit.Solution.Dynavars.dblHour = 0.0) then
+                            begin
+                              PVSys.puPmpp :=FFinalpuPmpp[k];
+                              PNew[k] :=FFinalpuPmpp[k];
+
+                              If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+','+PVSys.Name+',',
+                               Format('**VOLTVAR VARMAX_VARS mode limited PVSystem output level to**, puPmpp= %.5g, PriorWatts= %.5g', [PVSys.puPmpp,FPriorWattspu[k]]));
+                              Qnew[k] := Qtemp2;
+                              PVSys.Presentkvar := Qnew[k];
+
+                              ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
+                              FAvgpVuPrior[k] := FPresentVpu[k];
+                              POld[k] := PVSys.puPmpp;
+                          end;
+                        end;
+                    end;
+                  FHitkvaLimit[k] := True;
+                end;                           
 			
               Qoutputpu[k] := PVSys.Presentkvar / QHeadroom[k];
 			  QoutputVVpu[k] := Qoutputpu[k];
               If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
                              Format('VOLTVAR mode set PVSystem output var level to**, kvar= %.5g',
-                             [PVSys.Presentkvar,FPresentVpu[k]]));
+                             [PVSys.Presentkvar]));
               FAvgpVuPrior[k] := FPresentVpu[k];
               QOld[k] := QNew[k];
               QOldVV[k] := QNew[k];
@@ -1488,7 +1647,7 @@ BEGIN
                     Qoutputpu[k] := PVSys.Presentkvar / QHeadroom[k];
                     If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
                                    Format('VOLTVAR mode, LPF set PVSystem output var level to**, kvar= %.5g',
-                                   [PVSys.Presentkvar,FPresentVpu[k]]));
+                                   [Qnew[k]]));
                     FAvgpVuPrior[k] := FPresentVpu[k];
                     QOld[k] := QNew[k];
                     ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
@@ -1496,9 +1655,10 @@ BEGIN
             end;
 
           // Apply Rise/Fall volt-var
-          if (RateofChangeMode = RISEFALL) and ((ActiveCircuit.Solution.DynaVars.dblHour*3600.0 / ActiveCircuit.Solution.DynaVars.h)>2.0) then
+          if (RateofChangeMode = RISEFALL) and (ActiveCircuit.Solution.DynaVars.dblHour > 0.0) then
             begin
-			  FROCEvaluated[k] := True;              Qtemp := CalcRF(k, 'VARS', PVSys);
+			  FROCEvaluated[k] := True;
+              Qtemp := CalcRF(k, 'VARS', PVSys);
                 if(Qtemp <> -999.99) then
                   begin
                     if abs(Qtemp) > abs(PVSys.kvarLimit) then
@@ -1509,7 +1669,7 @@ BEGIN
                     Qoutputpu[k] := PVSys.Presentkvar / QHeadroom[k];
                     If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
                                    Format('VOLTVAR mode, RISEFALL set PVSystem output var level to**, kvar= %.5g',
-                                   [PVSys.Presentkvar,FPresentVpu[k]]));
+                                   [Qnew[k]]));
                     FAvgpVuPrior[k] := FPresentVpu[k];
                     QOld[k] := QNew[k];
                     ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
@@ -1536,7 +1696,8 @@ BEGIN
                   QDRCDesiredpu[k] := (Qtemp/QTemporig)*QDRCDesiredpu[k];
                   FHitkvarLimit[k] := True;
                 end;
-              PVSys.SetNominalPVSystemOuput;
+
+              PVSys.SetNominalPVSystemOuput;
               PTemp := PVSys.PresentkW;
               // if the desired kW and desired kvar exceed the kva rating of the PVSystem's inverter then...
               if SQRT(Sqr(Qtemp)+Sqr(PTemp)) > PVSys.kVARating then
@@ -1566,7 +1727,7 @@ BEGIN
                               PNew[k] :=FFinalpuPmpp[k];
 
                               If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+','+PVSys.Name+',',
-                               Format('**VV_DRC VARMAX_VARS mode set PVSystem output level to**, puPmpp= %.5g, PriorWatts= %.5g', [PVSys.puPmpp,FPriorWattspu[k]]));
+                               Format('**DRC VARMAX_VARS mode set PVSystem output level to**, puPmpp= %.5g, PriorWatts= %.5g', [PVSys.puPmpp,FPriorWattspu[k]]));
 
                               ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
                               FAvgpVuPrior[k] := FPresentVpu[k];
@@ -1585,8 +1746,8 @@ BEGIN
 
           Qoutputpu[k] := PVSys.Presentkvar / QHeadroom[k];
           If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
-                         Format('DYNAMICREACTIVECURRENT mode set PVSystem output var level to**, kvar= %.5g',
-                         [PVSys.Presentkvar,FPresentVpu[k]]));
+                         Format('DRC mode set PVSystem output var level to**, kvar= %.5g',
+                         [QTemp]));
 
           QoutputDRCpu[k] := PVSys.Presentkvar / QHeadroom[k];
 
@@ -1612,7 +1773,7 @@ BEGIN
 					  Qoutputpu[k] := PVSys.Presentkvar / QHeadroom[k];
 					  If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
 									 Format('DYNAMICREACTIVECURRENT mode, LPF set PVSystem output var level to**, kvar= %.5g',
-									 [PVSys.Presentkvar,FPresentVpu[k]]));
+									 [Qnew[k]]));
 					  FAvgpVuPrior[k] := FPresentVpu[k];
 					  QOld[k] := QNew[k];
 					  ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
@@ -1620,9 +1781,10 @@ BEGIN
 			  end;
 
 			// Apply Rise/Fall
-            if (RateofChangeMode = RISEFALL) and ((ActiveCircuit.Solution.DynaVars.dblHour*3600.0 / ActiveCircuit.Solution.DynaVars.h)>2.0) then
+            if (RateofChangeMode = RISEFALL) and (ActiveCircuit.Solution.DynaVars.dblHour > 0.0) then
               begin
-				FROCEvaluated[k] := True;                Qtemp := CalcRF(k, 'VARS', PVSys);
+				FROCEvaluated[k] := True;
+                Qtemp := CalcRF(k, 'VARS', PVSys);
                   if(Qtemp <> -999.99) then
                     begin
                       if abs(Qtemp) > abs(PVSys.kvarLimit) then
@@ -1633,7 +1795,7 @@ BEGIN
                       Qoutputpu[k] := PVSys.Presentkvar / QHeadroom[k];
                       If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name +','+ PVSys.Name+',',
                                      Format('DYNAMICREACTIVECURRENT mode, RISEFALL set PVSystem output var level to**, kvar= %.5g',
-                                     [PVSys.Presentkvar,FPresentVpu[k]]));
+                                     [Qnew[k],FPresentVpu[k]]));
                       FAvgpVuPrior[k] := FPresentVpu[k];
                       QOld[k] := QNew[k];
                       ActiveCircuit.Solution.LoadsNeedUpdating := TRUE;
@@ -1670,7 +1832,8 @@ BEGIN
             end;
 
 
-          // rate of change LPF
+
+          // rate of change LPF
           if (RateofChangeMode = LPF) and (ActiveCircuit.Solution.Dynavars.dblHour > 0.0) then
             begin
 			        FROCEvaluated[k] := True;
@@ -1743,6 +1906,8 @@ begin
          begin
             if(ActiveCircuit.Solution.DynaVars.t = 1) and (ActiveCircuit.Solution.ControlIteration=1) then
               FWithinTol[i] := False;
+              FWithinTolVV[i] := False;
+              FWithinTolVW[i] := False;
             ControlledElement[i].ComputeVTerminal;
             for j := 1 to ControlledElement[i].Yorder do
               cBuffer[i,j] := ControlledElement[i].Vterminal^[j];
@@ -1797,13 +1962,13 @@ begin
                     end;
 
                     //Trigger from volt-var mode
-                    if  (FRocEvaluated[i] = False) and (FWithinTol[i] = False)  then
+                    if  (FRocEvaluated[i] = False) and (FWithinTolVV[i] = False)  then
                     begin
                      if (((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) > FVoltageChangeTolerance) or
                       ((Abs(Abs(QoutputVVpu[i]) - Abs(Qdesiredpu[i])) > FVarChangeTolerance))) or
                       (ActiveCircuit.Solution.ControlIteration = 1)) then
                         begin
-                          FWithinTol[i] := False;
+                          FWithinTolVV[i] := False;
 
                           Set_PendingChange(CHANGEDRCVVARLEVEL,i);
                           With  ActiveCircuit.Solution.DynaVars Do
@@ -1812,13 +1977,15 @@ begin
 
                           If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+' '+ControlledElement[i].Name, Format
                             ('**Ready to change VV_DRC output due to volt-var trigger in VV_DRC mode**, Vavgpu= %.5g, VPriorpu=%.5g',
-                              [FPresentVpu[i],FAvgpVuPrior[i]]));
-                        end
+
+                              [FPresentVpu[i],FAvgpVuPrior[i]]));
+
+                        end
                       else
                       begin
                         if ((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) <= FVoltageChangeTolerance) and
                           ((Abs(Abs(QoutputVVpu[i]) - Abs(Qdesiredpu[i])) <= FVarChangeTolerance))) then
-                             FWithinTol[i] := True;
+                             FWithinTolVV[i] := True;
 //                          If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+' '+ControlledElement[i].Name, Format
   //                          ('**Hit Tolerance with volt-var**, Vavgpu= %.5g, VPriorpu=%.5g', [FPresentVpu[i],FAvgpVuPrior[i]]));
 
@@ -1828,7 +1995,7 @@ begin
                     //Trigger for ROC
                     if (RateofChangeMode <> INACTIVE) and (ActiveCircuit.Solution.DynaVars.dblHour > 0.0) then
                       begin
-                      if (FWithinTol[i] = True) and (FRocEvaluated[i] = False) then
+                      if (FWithinTolVV[i] = True) and (FRocEvaluated[i] = False) then
                         begin
                            FFlagROCOnly[i] := True;
                            Set_PendingChange(CHANGEDRCVVARLEVEL,i);
@@ -1867,9 +2034,12 @@ begin
                     end;
 
                   // Trigger from volt-watt mode
-                  if (Abs(FPresentVpu[i] - FAvgpVuPrior[i]) > FVoltageChangeTolerance) and (FROCEvaluated[i] = False) then
+                  if  (FRocEvaluated[i] = False) and (FWithinTolVW[i] = False)  then
+                  begin
+                  if ((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) > FVoltageChangeTolerance) or (Abs(PNew[i]-POld[i])>FActivePChangeTolerance) or
+                      (ActiveCircuit.Solution.ControlIteration = 1)) and (FROCEvaluated[i] = False) then
                     begin
-                      FWithinTol[i] := False;
+                      FWithinTolVW[i] := False;
                       FFlagROCOnly[i] := False;
                       Set_PendingChange(CHANGEWATTVARLEVEL,i);
 
@@ -1881,18 +2051,20 @@ begin
                      end
                      else
                        begin
-                        if (Abs(FPresentVpu[i] - FAvgpVuPrior[i]) <= FVoltageChangeTolerance) then
-                         FWithinTol[i] := True;
+                        if ((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) <= FVoltageChangeTolerance) or
+                        (Abs(PNew[i]-Pold[i])<=FActivePChangeTolerance)) then
+                         FWithinTolVW[i] := True;
                          FFlagROCOnly[i] := False;
                        end;
-                    //Trigger from volt-var mode
-                    if  (FRocEvaluated[i] = False) and (FWithinTol[i] = False)  then
+                    end;
+                    //Trigger from volt-var mode
+                    if  (FRocEvaluated[i] = False) and (FWithinTolVV[i] = False)  then
                     begin
                      if (((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) > FVoltageChangeTolerance) or
                       ((Abs(Abs(Qoutputpu[i]) - Abs(Qdesiredpu[i])) > FVarChangeTolerance))) or
                       (ActiveCircuit.Solution.ControlIteration = 1)) then
                         begin
-                          FWithinTol[i] := False;
+                          FWithinTolVV[i] := False;
 
                           Set_PendingChange(CHANGEWATTVARLEVEL,i);
                           With  ActiveCircuit.Solution.DynaVars Do
@@ -1909,7 +2081,7 @@ begin
                       begin
                         if ((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) <= FVoltageChangeTolerance) and
                           ((Abs(Abs(Qoutputpu[i]) - Abs(Qdesiredpu[i])) <= FVarChangeTolerance))) then
-                             FWithinTol[i] := True;
+                             FWithinTolVV[i] := True;
 //                          If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+' '+ControlledElement[i].Name, Format
 //                            ('**Hit Tolerance with volt-var**, Vavgpu= %.5g, VPriorpu=%.5g', [FPresentVpu[i],FAvgpVuPrior[i]]));
 
@@ -1919,7 +2091,7 @@ begin
                     //Trigger for ROC
                     if (RateofChangeMode <> INACTIVE) and (ActiveCircuit.Solution.DynaVars.dblHour > 0.0) then
                       begin
-                      if (FWithinTol[i] = True) and (FRocEvaluated[i] = False) then
+                      if (FWithinTolVV[i] = True) and (FWithinTolVW[i] = True) and (FRocEvaluated[i] = False) then
                         begin
                            FFlagROCOnly[i] := True;
                            Set_PendingChange(CHANGEWATTVARLEVEL,i);
@@ -1931,8 +2103,8 @@ begin
 //                                ('**Ready to change VV_VW output due to volt-watt trigger (ROC)**, Vavgpu= %.5g, VPriorpu=%.5g', [FPresentVpu[i],FAvgpVuPrior[i]]));
                          end;
                       end;
-              end;
 
+                  end;
 
 
             if ControlMode = 'VOLTWATT' then  // volt-watt control mode
@@ -1947,9 +2119,15 @@ begin
 
 
                   ControlledElement[i].VWmode  := TRUE;
-                  if (Abs(FPresentVpu[i] - FAvgpVuPrior[i]) > FVoltageChangeTolerance) and (FROCEvaluated[i] = False) then
+                  if  (FRocEvaluated[i] = False) and (FWithinTolVW[i] = False)  then
+                  begin
+
+                  if ((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) > FVoltageChangeTolerance) or (Abs(PNew[i]-POld[i])>FActivePChangeTolerance) or
+                      (ActiveCircuit.Solution.ControlIteration = 1)) and (FROCEvaluated[i] = False) then
+
+
                     begin
-                      FWithinTol[i] := False;
+                      FWithinTolVW[i] := False;
                       FFlagROCOnly[i] := False;
                       Set_PendingChange(CHANGEWATTLEVEL,i);
 
@@ -1962,11 +2140,12 @@ begin
 
                      else
                        begin
-                        if (Abs(FPresentVpu[i] - FAvgpVuPrior[i]) <= FVoltageChangeTolerance) then
-                         FWithinTol[i] := True;
+                        if ((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) <= FVoltageChangeTolerance) or
+                        (Abs(PNew[i]-Pold[i])<=FActivePChangeTolerance)) then
+                         FWithinTolVW[i] := True;
                          FFlagROCOnly[i] := False;
                        end;
-
+                    end;
                     if (RateofChangeMode <> INACTIVE) and (ActiveCircuit.Solution.DynaVars.dblHour > 0.0) then
                       begin
                       if (FWithinTol[i] = True) and (FRocEvaluated[i] = False) then
@@ -1999,13 +2178,13 @@ begin
                       end;
 
                     //Trigger from volt-var mode
-                    if  (FRocEvaluated[i] = False) and (FWithinTol[i] = False)  then
+                    if  (FRocEvaluated[i] = False) and (FWithinTolVV[i] = False)  then
                     begin
                      if (((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) > FVoltageChangeTolerance) or
                       ((Abs(Abs(QoutputVVpu[i]) - Abs(Qdesiredpu[i])) > FVarChangeTolerance))) or
                       (ActiveCircuit.Solution.ControlIteration = 1)) then
                         begin
-                          FWithinTol[i] := False;
+                          FWithinTolVV[i] := False;
 
                           Set_PendingChange(CHANGEVARLEVEL,i);
                           With  ActiveCircuit.Solution.DynaVars Do
@@ -2022,7 +2201,7 @@ begin
                       begin
                         if ((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) <= FVoltageChangeTolerance) and
                           ((Abs(Abs(QoutputVVpu[i]) - Abs(Qdesiredpu[i])) <= FVarChangeTolerance))) then
-                             FWithinTol[i] := True;
+                             FWithinTolVV[i] := True;
   //                        If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+' '+ControlledElement[i].Name, Format
 //                            ('**Hit Tolerance with volt-var**, Vavgpu= %.5g, VPriorpu=%.5g', [FPresentVpu[i],FAvgpVuPrior[i]]));
 
@@ -2032,10 +2211,10 @@ begin
                     //Trigger for ROC
                     if (RateofChangeMode <> INACTIVE) and (ActiveCircuit.Solution.DynaVars.dblHour > 0.0) then
                       begin
-                      if (FWithinTol[i] = True) and (FRocEvaluated[i] = False) then
+                      if (FWithinTolVV[i] = True) and (FRocEvaluated[i] = False) then
                         begin
                            FFlagROCOnly[i] := True;
-                           Set_PendingChange(CHANGEDRCVVARLEVEL,i);
+                           Set_PendingChange(CHANGEVARLEVEL,i);
 
                             With  ActiveCircuit.Solution.DynaVars Do
                             ControlActionHandle := ActiveCircuit.ControlQueue.Push
@@ -2071,8 +2250,8 @@ begin
 
                     if  (FRocEvaluated[i] = False) and (FWithinTol[i] = False)  then
                     begin
-                     if (((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) > FVoltageChangeTolerance) or
-                      ((Abs(Abs(QoutputDRCpu[i]) - Abs(Qdesiredpu[i])) > FVarChangeTolerance))) or
+                     if ((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) > FVoltageChangeTolerance) or
+//                      (Abs(Abs(QoutputDRCpu[i]) - Abs(Qdesiredpu[i])) > FVarChangeTolerance) or // TEMc; also tried checking against QDRCdesiredpu
                       (ActiveCircuit.Solution.ControlIteration = 1)) then
                         begin
                           FWithinTol[i] := False;
@@ -2082,17 +2261,18 @@ begin
                             ControlActionHandle := ActiveCircuit.ControlQueue.Push
                               (intHour, t + TimeDelay, PendingChange[i], 0, Self);
 
-//                          If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+' '+ControlledElement[i].Name, Format
-  //                          ('**Ready to change DRC output due to out of tolerance V and Q trigger**, Vavgpu= %.5g, VPriorpu=%.5g',
-    //                          [FPresentVpu[i],FAvgpVuPrior[i]]));
-                        end
+                          If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+' '+ControlledElement[i].Name, Format
+                            ('**Ready to change DRC output because V or Q out of tolerance**, Vavgpu= %.5g, VPriorpu=%.5g, QoutPU=%.3g, QdesiredPU=%.3g, QDRCdesiredPU=%.3g',
+                              [FPresentVpu[i],FAvgpVuPrior[i],QoutputDRCpu[i],Qdesiredpu[i],QDRCdesiredpu[i]]));
+
+                        end
                       else
                       begin
                         if ((Abs(FPresentVpu[i] - FAvgpVuPrior[i]) <= FVoltageChangeTolerance) and
                           ((Abs(Abs(QoutputDRCpu[i]) - Abs(Qdesiredpu[i])) <= FVarChangeTolerance))) then
                              FWithinTol[i] := True;
-//                          If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+' '+ControlledElement[i].Name, Format
-//                            ('**Hit Tolerance with DRCvar**, Vavgpu= %.5g, VPriorpu=%.5g', [FPresentVpu[i],FAvgpVuPrior[i]]));
+                          If ShowEventLog Then AppendtoEventLog('InvControl.' + Self.Name+' '+ControlledElement[i].Name, Format
+                            ('**Hit Tolerance with DRCvar**, Vavgpu= %.5g, VPriorpu=%.5g', [FPresentVpu[i],FAvgpVuPrior[i]]));
 
                       end;
                     end;
@@ -2203,6 +2383,8 @@ begin
        SetLength(FPriorvarspu, FListSize+1);
        SetLength(FLPFTime, FListSize+1);
        SetLength(FWithinTol, FListSize+1);
+       SetLength(FWithinTolVV, FListSize+1);
+       SetLength(FWithinTolVW, FListSize+1);
        SetLength(FROCEvaluated, FListSize+1);
        SetLength(FHitkVALimit, FListSize+1);
        SetLength(FHitkvarLimit, FListSize+1);
@@ -2279,6 +2461,8 @@ begin
          SetLength(FPriorvarspu, FListSize+1);
          SetLength(FLPFTime, FListSize+1);
          SetLength(FWithinTol, FListSize+1);
+         SetLength(FWithinTolVV, FListSize+1);
+         SetLength(FWithinTolVW, FListSize+1);
          SetLength(FROCEvaluated, FListSize+1);
          SetLength(FHitkVALimit, FListSize+1);
          SetLength(FHitkvarLimit, FListSize+1);
@@ -2328,9 +2512,9 @@ begin
            Qdesiredpu[i]                            :=0.0;
            QDRCdesiredpu[i]                         :=0.0;
            FRollAvgWindow[i]                        := TRollAvgWindow.Create;
-           FRollAvgWindow[i].BuffLength             := FRollAvgWindowLength;
+//           FRollAvgWindow[i].BuffLength             := FRollAvgWindowLength;
            FDRCRollAvgWindow[i]                     := TRollAvgWindow.Create;
-           FDRCRollAvgWindow[i].BuffLength          := FDRCRollAvgWindowLength;
+//           FDRCRollAvgWindow[i].BuffLength          := FDRCRollAvgWindowLength;
 
            deltaVDynReac[i]                         := 0.0;
            FlagChangeCurve[i]                       := False;
@@ -2341,6 +2525,8 @@ begin
            FPriorvarspu[i]                          := 0.0;
            FLPFTime[i]                              := 0.0;
            FWithinTol[i]                            := False;
+           FWithinTolVV[i]                            := False;
+           FWithinTolVW[i]                            := False;
            FROCEvaluated[i]                         := False;
            FHitkVALimit[i]                          := False;
            FHitkvarLimit[i]                         := False;
@@ -2613,11 +2799,11 @@ end;
 
 procedure TInvControlObj.UpdateInvControl(i:integer);
 Var
-   j,k                      : Integer;
-   solnvoltage,tempa3       : Double;
-   localControlledElement     : TDSSCktElement;
-   tempVbuffer                : pComplexArray;
-   PVSys                      : TPVSystemObj;
+   j,k                    : Integer;
+   solnvoltage            : Double;
+   localControlledElement : TDSSCktElement;
+   tempVbuffer            : pComplexArray;
+   PVSys                  : TPVSystemObj;
 
 
 begin
@@ -2631,7 +2817,8 @@ begin
                  //update solution voltage in per-unit for hysteresis
                  if FVpuSolutionIdx = 2 then FVpuSolutionIdx := 1
                  else FVpuSolutionIdx := FVpuSolutionIdx+1;
-               end;
+
+               end;
 
              localControlledElement := ControlledElement[j];
              PVSys := localControlledElement as TPVSystemObj;
@@ -2639,10 +2826,14 @@ begin
              FPriorvarspu[j]  := PVSys.Presentkvar/SQRT(Sqr(PVSys.kVARating)-Sqr(PVSys.PresentkW));
              PVSys.PVSystemVars.FpuPmpp := 1.0;
              FWithinTol[j] := False;
+             FWithinTolVV[j] := False;
+             FWithinTolVW[j] := False;
              FROCEvaluated[j] := False;
-             FHitkVALimit[j]  := False;
+
+             FHitkVALimit[j]  := False;
              FHitkvarLimit[j] := False;
-             FFlagROCOnly[j]  := False;
+
+             FFlagROCOnly[j]  := False;
 
              // allocated enough memory to buffer to hold voltages and initialize to cZERO
              Reallocmem(tempVbuffer, Sizeof(tempVbuffer^[1]) * localControlledElement.NConds);
@@ -2652,6 +2843,8 @@ begin
              priorDRCRollAvgWindow[j] := FDRCRollAvgWindow[j].Get_AvgVal;
              // compute the present terminal voltage
              localControlledElement.ComputeVterminal;
+             PVSys.Set_Variable(5,FDRCRollAvgWindow[j].Get_AvgVal); // save rolling average voltage in monitor
+
 
              for k := 1 to localControlledElement.Yorder do tempVbuffer[k] := localControlledElement.Vterminal^[k];
 
@@ -2718,19 +2911,13 @@ End;
 Procedure TInvControlObj.CalcDRC_vars(j: Integer);
 VAR
 
-  Pdesiredpu                                :Double;
-  voltagechangesolution,VpuFromCurve,
-  DeltaQ,basekV,alpha,
-  LPFvarspu,Qdesiredpu_temp,QTemp,tempa,tempa2,TempQ     :Double;
+  DeltaQ,basekV,
+  QTemp,TempQ     :Double;
   SMonitoredElement                         :Complex;
 
 
  // local pointer to current PVSystem element
   PVSys                                     :TPVSystemObj;
-
-  FDiffvar                                  :Array of Double;
-  FDesiredpu_temp                           :Array of Double;
-  FlagFinished                              :Boolean;
 
 BEGIN
 
@@ -2805,125 +2992,108 @@ END;
 
 FUNCTION TInvControlObj.CalcLPF(m: Integer; powertype: String;PVSys:TPVSystemObj):Double;
 VAR
-  j                                         :Integer;
-  Pdesiredpu                                :Double;
-  voltagechangesolution,QPresentpu,VpuFromCurve,
-  DeltaQ,basekV,alpha,DeltaP,
-  LPFvarspu,Qdesiredpu_temp,LPFwattspu      :Double;
+  Pdesiredpu                :Double;
+  DeltaQ,alpha,DeltaP,
+  LPFvarspu,LPFwattspu      :Double;
 
   // Applies the LPF:
   //  Return value is in kvar for VARS
   //  Return value is in puPmpp for WATTS
 
 BEGIN
-       // calculate the alpha constant
-       alpha := 1.0/(ActiveCircuit.Solution.DynaVars.h)/(FLPFTau+1.0/ActiveCircuit.Solution.DynaVars.h);
-       if powertype = 'VARS' then
-        begin
-           LPFvarspu :=alpha*(Qoutputpu[m])+(1-alpha)*(FPriorvarspu[m]);
-           if (LPFvarspu <> 0.0) then
-            begin
-             QDeliver[m] := LPFvarspu*QHeadRoom[m];
-             DeltaQ := QDeliver[m] - Qold[m];
 
-             Result := QOld[m] + DeltaQ * FdeltaQ_factor;
-            end
+  Result := -999.999;
+  // calculate the alpha constant
+  alpha := 1.0/(ActiveCircuit.Solution.DynaVars.h)/(FLPFTau+1.0/ActiveCircuit.Solution.DynaVars.h);
+  if powertype = 'VARS' then begin
+    LPFvarspu :=alpha*(Qoutputpu[m])+(1-alpha)*(FPriorvarspu[m]);
+    if (LPFvarspu <> 0.0) then begin
+      QDeliver[m] := LPFvarspu*QHeadRoom[m];
+      DeltaQ := QDeliver[m] - Qold[m];
+      Result := QOld[m] + DeltaQ * FdeltaQ_factor;
+    end;
 
-           else
-            Result := -999.999;
-        end;
-       if powertype = 'WATTS' then
-        begin
-           LPFWattspu :=alpha*(FFinalpuPmpp[m])+(1-alpha)*(FPriorWattspu[m]);
-           if (LPFWattspu <> 0.0) then
-             begin
-                Pdesiredpu := LPFWattspu;
-                DeltaP := Pdesiredpu - POld[m];
-                Result := POld[m] + DeltaP * FdeltaP_factor;
-              end
-           else
-            Result := -999.999;
-        end;
+  end;
+  if powertype = 'WATTS' then begin
+    LPFWattspu :=alpha*(FFinalpuPmpp[m])+(1-alpha)*(FPriorWattspu[m]);
+    if (LPFWattspu <> 0.0) then begin
+      Pdesiredpu := LPFWattspu;
+      DeltaP := Pdesiredpu - POld[m];
+      Result := POld[m] + DeltaP * FdeltaP_factor;
+    end;
+  end;
 END;
 
 FUNCTION TInvControlObj.CalcRF(m: Integer;powertype: String;PVSys:TPVSystemObj):Double;
 VAR
   Pdesiredpu                                :Double;
-  voltagechangesolution,QPresentpu,VpuFromCurve,
-  DeltaQ,basekV,alpha,DeltaP,
-  LPFvarspu,Pdesiredpu_temp,LPFwattspu,
+  DeltaP,
+  Pdesiredpu_temp,
   Qdesiredpu_temp                           :Double;
 
 BEGIN
-
-
-
+  Result := 0.0;
   // Applies the Rise/Fall limiting function:
   //  Return value is in kvar for VARS
   //  Return value is in puPmpp for WATTS
-  if FVV_ReacPower_ref = 'VARAVAL_WATTS' then QHeadRoom[m] := SQRT(Sqr(PVSys.kVARating)-Sqr(PVSys.PresentkW));
-  if (FVV_ReacPower_ref = 'VARMAX_VARS') or (FVV_ReacPower_ref = 'VARMAX_WATTS') then QHeadRoom[m] := PVSys.kvarLimit;
+  if FVV_ReacPower_ref = 'VARAVAL_WATTS' then
+    QHeadRoom[m] := SQRT(Sqr(PVSys.kVARating)-Sqr(PVSys.PresentkW));
+  if (FVV_ReacPower_ref = 'VARMAX_VARS') or (FVV_ReacPower_ref = 'VARMAX_WATTS') then
+    QHeadRoom[m] := PVSys.kvarLimit;
 
+  if powertype='VARS' then begin
 
-            if powertype='VARS' then
-              begin
-                if(abs(PVSys.Presentkvar) < 0.00001) then
-                begin
-                  Result := 0.0;
-                  exit;
-                end;
-                // rate of change rise/fall limit
-                if(PVSys.Presentkvar/QHeadroom[m] - FPriorvarspu[m])<=0  then
-                  begin
-                    if(PVSys.Presentkvar<=0) then Qdesiredpu_temp := Max((FPriorvarspu[m]-(FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h))),PVSys.Presentkvar/QHeadroom[m])
-                    else Qdesiredpu_temp := Min((FPriorvarspu[m]-(FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h))),PVSys.Presentkvar/QHeadroom[m])
-                  end
-                else
-                  begin
-                    if(PVSys.Presentkvar<=0) then Qdesiredpu_temp := Max((FPriorvarspu[m]+(-1.0*FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h))),PVSys.Presentkvar/QHeadroom[m])
-                    else Min((FPriorvarspu[m]+(-1.0*FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h))),PVSys.Presentkvar/QHeadroom[m]);
-                  end;
-                FROCEvaluated[m] := True;
-                Result := Qdesiredpu_temp*QHeadRoom[m];
-            end;
+    if(abs(PVSys.Presentkvar) < 0.00001) then begin
 
-            if powertype = 'WATTS' then
-              begin
-                // rate of change rise/fall limit
-                if (abs(FFinalpuPmpp[m] - FPriorWattspu[m])/(1.0/ActiveCircuit.Solution.DynaVars.h*1.0)) > FRiseFallLimit then
-                  begin
+      exit;
+    end;
+    // rate of change rise/fall limit
+    if(PVSys.Presentkvar/QHeadroom[m] - FPriorvarspu[m])<=0 then begin
+      if(PVSys.Presentkvar<=0) then
+        Qdesiredpu_temp := Max((FPriorvarspu[m]-(FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h))),PVSys.Presentkvar/QHeadroom[m])
+      else
+        Qdesiredpu_temp := Min((FPriorvarspu[m]-(FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h))),PVSys.Presentkvar/QHeadroom[m])
+    end else begin
+      if(PVSys.Presentkvar<=0) then
+        Qdesiredpu_temp := Max((FPriorvarspu[m]+(-1.0*FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h))),PVSys.Presentkvar/QHeadroom[m])
+      else  // TODO - Wes check the following, Tom prepended Qdesiredpu_temp :=
+        Qdesiredpu_temp := Min((FPriorvarspu[m]+(-1.0*FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h))),PVSys.Presentkvar/QHeadroom[m]);
+    end;
+    FROCEvaluated[m] := True;
+    Result := Qdesiredpu_temp*QHeadRoom[m];
+  end;
 
-                    if(FFinalpuPmpp[m] - FPriorWattspu[m])<=0 then Pdesiredpu_temp := (FPriorWattspu[m]-(FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h)));
-                    if(FFinalpuPmpp[m] - FPriorWattspu[m])>0 then Pdesiredpu_temp := (FPriorWattspu[m]+(FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h)));
-                    if(Pdesiredpu_temp > PVSys.PresentkW/PVSys.PVSystemVars.FPmpp) then Pdesiredpu_temp := PVSys.PresentkW/PVSys.PVSystemVars.FPmpp;
-                    if (Pdesiredpu_temp <> 0.0)   then
-                      begin
-                        Pdesiredpu :=Pdesiredpu_temp;
-                        DeltaP := Pdesiredpu - POld[m];
-                        Result := POld[m] + DeltaP * FdeltaP_factor;
-                      end;
-                  end
-                else Result := PVSys.PresentkW/PVSys.PVSystemVars.FPmpp;
-              end;
-
+  if powertype = 'WATTS' then begin
+    // rate of change rise/fall limit
+    if (abs(FFinalpuPmpp[m] - FPriorWattspu[m])/(1.0/ActiveCircuit.Solution.DynaVars.h*1.0)) > FRiseFallLimit then begin
+      if(FFinalpuPmpp[m] - FPriorWattspu[m])<=0 then
+        Pdesiredpu_temp := (FPriorWattspu[m]-(FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h)))
+      else
+        Pdesiredpu_temp := (FPriorWattspu[m]+(FRiseFallLimit*(1.0/ActiveCircuit.Solution.DynaVars.h)));
+      if(Pdesiredpu_temp > PVSys.PresentkW/PVSys.PVSystemVars.FPmpp) then
+        Pdesiredpu_temp := PVSys.PresentkW/PVSys.PVSystemVars.FPmpp;
+      if (Pdesiredpu_temp <> 0.0) then begin
+        Pdesiredpu :=Pdesiredpu_temp;
+        DeltaP := Pdesiredpu - POld[m];
+        Result := POld[m] + DeltaP * FdeltaP_factor;
+      end;
+    end else
+      Result := PVSys.PresentkW/PVSys.PVSystemVars.FPmpp;
+  end;
 END;
 
 Procedure TInvControlObj.CalcVoltVar_vars(j: Integer);
 VAR
 
-  Pdesiredpu                                :Double;
   voltagechangesolution,QPresentpu,VpuFromCurve,
-  DeltaQ,basekV,alpha,
-  Qdesiredpu_temp                           :Double;
-  SMonitoredElement                         :Complex;
+  DeltaQ                                   :Double;
+  SMonitoredElement                        :Complex;
 
 
  // local pointer to current PVSystem element
   PVSys                                     :TPVSystemObj;
   FDiffvar                                  :Array of Double;
   FDesiredpu_temp                           :Array of Double;
-  FlagFinished                              :Boolean;
-
 
 BEGIN
 
@@ -2953,7 +3123,7 @@ BEGIN
 
       // if no hysteresis (Fvvc_curveOffset == 0), then just look up the value
       // from the volt-var curve
-      if (FWithinTol[j]=False) then
+      if (FWithinTolVV[j]=False) then
       begin
       if Fvvc_curveOffset = 0.0 then begin  // no hysteresis
           Qdesiredpu[j] := Fvvc_curve.GetYValue(FPresentVpu[j])
@@ -3096,6 +3266,7 @@ End;
 
 procedure TRollAvgWindow.Add(IncomingSampleValue: Double;IncomingSampleTime: Double;VAvgWindowLengthSec:Double);
 begin
+{$IFNDEF FPC}
   if(sample.Count > 0) and (bufferfull) then
     begin
       runningsumsample := runningsumsample - sample.Dequeue;
@@ -3124,8 +3295,36 @@ begin
       if (sample.Count = bufferlength)
           then bufferfull := True;
     end;
-
-
+{$ELSE}
+if(sample.size > 0) and (bufferfull) then
+  begin
+    runningsumsample := runningsumsample - sample.front; sample.pop;
+    if(bufferlength = 0) then
+      begin
+        IncomingSampleValue := 0.0;
+      end;
+    sample.push(IncomingSampleValue);
+    runningsumsample := runningsumsample + IncomingSampleValue;
+    runningsumsampletime := runningsumsampletime - sampletime.front; sampletime.pop;
+    sampletime.push(IncomingSampleTime);
+    runningsumsampletime := runningsumsampletime +IncomingSampleTime;
+  end
+else
+  begin
+    if(bufferlength = 0) then
+      begin
+        IncomingSampleValue := 0.0;
+      end;
+    sample.push(IncomingSampleValue);
+    runningsumsample := runningsumsample + IncomingSampleValue;
+    sampletime.push(IncomingSampleTime);
+    runningsumsampletime := runningsumsampletime + IncomingSampleTime;
+    if (runningsumsampletime > VAvgWindowLengthSec)
+        then bufferfull := True;
+    if (sample.size = bufferlength)
+        then bufferfull := True;
+  end;
+{$ENDIF}
 end;
 
 constructor TRollAvgWindow.Create();
@@ -3155,16 +3354,28 @@ end;
 
 function TRollAvgWindow.Get_AvgVal: Double;
 begin
+{$IFNDEF FPC}
   if(sample.Count = 0) then
     Result:= 0.0
   else  Result:= runningsumsample / sample.Count;
+{$ELSE}
+  if(sample.size = 0) then
+    Result:= 0.0
+  else  Result:= runningsumsample / sample.size;
+{$ENDIF}
 end;
 
 function TRollAvgWindow.Get_AccumSec: Double;
 begin
+{$IFNDEF FPC}
   if(sample.Count = 0) then
     Result:= 0.0
-  else  Result:= runningsumsampletime;
+  else Result:= runningsumsampletime;
+{$ELSE}
+  if(sample.size = 0) then
+    Result:= 0.0
+  else Result:= runningsumsampletime;
+{$ENDIF}
 end;
 
 

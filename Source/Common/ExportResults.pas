@@ -57,15 +57,16 @@ Procedure ExportYNodeList(FileNM:String);
 Procedure ExportYVoltages(FileNM:String);
 Procedure ExportYCurrents(FileNM:String);
 Procedure ExportSections(FileNM:String; pMeter:TEnergyMeterObj);
+Procedure ExportErrorLog(FileNm:String);
 
 
 IMPLEMENTATION
 
-Uses uComplex,  Arraydef, System.sysutils,   Circuit, DSSClassDefs, DSSGlobals,
+Uses uComplex,  Arraydef, Sysutils,   Circuit, DSSClassDefs, DSSGlobals,
      uCMatrix,  solution, CktElement, Utilities, Bus, MathUtil, DSSClass,
      PDElement, PCElement, Generator,  Sensor, Load, RegControl, Transformer,
      ParserDel, Math, Ymatrix, LineGeometry, WireData, LineCode, XfmrCode, NamedObject,
-     GICTransformer, PVSystem, Storage;
+     GICTransformer, PVSystem, Storage, KLUSolve;
 
 Procedure WriteElementVoltagesExportFile(Var F:TextFile; pElem:TDSSCktElement;MaxNumNodes:Integer);
 
@@ -80,7 +81,7 @@ Begin
   Nterm := pElem.Nterms;
   k:=0;
   BusName := (StripExtension(pElem.FirstBus));
-  Write(F, System.Sysutils.Format('%s.%s',[pElem.DSSClassName, pElem.Name]));
+  Write(F, Format('%s.%s',[pElem.DSSClassName, pElem.Name]));
 
 
   Write(F, Format(',%d',[NTerm]));
@@ -2387,6 +2388,7 @@ Var
     iNormal,
     iEmerg, Cmax   :Double;
     Separator      :String;
+    Spower         :Double;
 
 Begin
 
@@ -2400,7 +2402,7 @@ Begin
      Getmem(cbuffer, sizeof(cBuffer^[1])* GetMaxCktElementSize);
 
      {Sequence Currents}
-     Writeln(F,'Element, Terminal,  I1, %Normal, %Emergency, I2, %I2/I1, I0, %I0/I1');
+     Writeln(F,'Element, Terminal,  I1, AmpsOver, kVAOver, %Normal, %Emergency, I2, %I2/I1, I0, %I0/I1');
 
      Separator := ', ';
 
@@ -2439,12 +2441,18 @@ Begin
             THEN
              IF (CMax > PDElem.NormAmps) OR (Cmax > pdelem.EmergAmps)
              THEN Begin
-                 Write(F, Pad(('"'+pDelem.DSSClassName + '.' + Uppercase(pDelem.Name)+'"'), 22),  Separator, j:3);
-                 Write(F, Separator, I1:8:1);
+               // Get terminal 1 power
+                 Spower := Cabs(PDElem.Power[1]) * 0.001;   // kW
+
+                 Write(F, Format('%s, %d, ' ,[Pad(('"'+pDelem.DSSClassName + '.' + Uppercase(pDelem.Name)+'"'), 22),j]));
+                 Write(F, Format('%8.2f, ',[I1 ]));
                  IF  j = 1 THEN Begin // Only for 1st Terminal
                       iNormal := PDelem.NormAmps;
                       IF iNormal > 0.0
-                          THEN Write(F, Separator, Cmax/iNormal*100.0:8:1)
+                          THEN Begin
+                                    Write(F, Format('%8.2f, %10.2f', [(Cmax - iNormal), Spower*(Cmax-iNormal)/iNormal ]));
+                                    Write(F, Separator, Cmax/iNormal*100.0:8:1);
+                               End
                           ELSE Write(F, Separator, '     0.0');
                       iEmerg :=  PDelem.EmergAmps;
                       IF iEmerg > 0.0
@@ -3043,6 +3051,13 @@ Procedure ExportEventLog(FileNm:String);
 // Export the present set of EventStrings
 Begin
      EventStrings.SaveToFile(FileNm);
+     GlobalResult := FileNm;
+End;
+
+Procedure ExportErrorLog(FileNm:String);
+// Export the present set of EventStrings
+Begin
+     ErrorStrings.SaveToFile(FileNm);
      GlobalResult := FileNm;
 End;
 

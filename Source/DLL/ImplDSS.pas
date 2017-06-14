@@ -59,7 +59,8 @@ uses ComServ,
      Exechelper,
      sysUtils,
      Executive,
-     Variants;
+     Variants,
+     ParserDel;
 
 function TDSS.Get_ActiveCircuit: ICircuit;
 begin
@@ -147,7 +148,14 @@ end;
 function TDSS.Start(code: Integer): WordBool;
 {Place any start code here}
 begin
-    Result :=  TRUE;
+  Result :=  TRUE;
+ (*      Reverted to original method. 3/1/17. see dpr file
+      InitializeInterfaces;
+      IsDLL := TRUE;
+    {Create one instance of DSS executive whenever the DSS Engine is init'd}
+      DSSExecutive := TExecutive.Create;  // Start the DSS when DSS interface is created
+      DSSExecutive.CreateDefaultDSSItems;
+  *)
 end;
 
 function TDSS.Get_DSSProgress: IDSSProgress;
@@ -228,7 +236,9 @@ end;
 
 procedure TDSS.Reset;
 begin
-        {Put any code here necessary to reset for specific systems};
+     {Put any code here necessary to reset for specific systems};
+ // revert to original -- DSSExecutive.Free;
+
 end;
 
 

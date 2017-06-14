@@ -2,16 +2,16 @@ unit DSolution;
 
 interface
 
-function SolutionI(mode:longint; arg: longint):longint; stdcall;
-function SolutionF(mode:longint; arg: double):double; stdcall;
-function SolutionS(mode:longint; arg: pAnsiChar):pAnsiChar; stdcall;
-procedure SolutionV(mode:longint; out arg: OleVariant); stdcall;
+function SolutionI(mode:longint; arg: longint):longint; cdecl;
+function SolutionF(mode:longint; arg: double):double; cdecl;
+function SolutionS(mode:longint; arg: pAnsiChar):pAnsiChar; cdecl;
+procedure SolutionV(mode:longint; out arg:Variant); cdecl;
 
 implementation
 
 uses DSSGlobals, Math, LoadShape, Utilities, YMatrix, Variants, SolutionAlgs;
 
-function SolutionI(mode:longint; arg: longint):longint; stdcall;
+function SolutionI(mode:longint; arg: longint):longint; cdecl;
 begin
   Result:=0; // Default retirn value
   case mode of
@@ -251,7 +251,7 @@ begin
 end;
 
 //***************************floating point variables*******************************
-function SolutionF(mode:longint; arg: double):double; stdcall;
+function SolutionF(mode:longint; arg: double):double; cdecl;
 begin
   Result:=0.0; // Default return value
   case mode of
@@ -366,6 +366,26 @@ begin
           ActiveCircuit.Solution.Dynavars.h := arg * 3600.0;
       End;
       Result:=0.0;
+  end;
+  24: begin // Solution.Process_Time
+      If ActiveCircuit <> Nil Then Begin
+          Result  :=  ActiveCircuit.Solution.Time_Solve;
+      End;
+  end;
+  25: begin // Solution.Total_Time read
+      If ActiveCircuit <> Nil Then Begin
+          Result  :=  ActiveCircuit.Solution.Total_Time;
+      End;
+  end;
+  26: begin // Solution.Total_Time Write
+      If ActiveCircuit <> Nil Then Begin
+          ActiveCircuit.Solution.Total_Time :=  arg;
+      End;
+  end;
+  27: begin // Solution.Time_TimeStep
+      If ActiveCircuit <> Nil Then Begin
+          Result  :=  ActiveCircuit.Solution.Time_Step;
+      End;
   end
   else
       Result:=-1.0;
@@ -373,7 +393,7 @@ begin
 end;
 
 //***************************String type properties*******************************
-function SolutionS(mode:longint; arg: pAnsiChar):pAnsiChar; stdcall;
+function SolutionS(mode:longint; arg: pAnsiChar):pAnsiChar; cdecl;
 
 var
 TestLoadShapeObj :TLoadShapeObj;
@@ -431,7 +451,7 @@ begin
 end;
 
 //**********************************Variant type properties*******************************
-procedure SolutionV(mode:longint; out arg: OleVariant); stdcall;
+procedure SolutionV(mode:longint; out arg:Variant); cdecl;
 Var i:Integer;
 begin
   case mode of

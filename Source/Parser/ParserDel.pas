@@ -18,7 +18,8 @@ unit ParserDel;
 interface
 
 Uses
-    Arraydef, classes,{controls,} DSSForms, Sysutils, RPN, HashList;
+    Arraydef, classes,{controls,} {$IFDEF FPC} CmdForms,{$ELSE} DSSForms,{$ENDIF}
+    Sysutils, RPN, HashList;
 
 
 
@@ -112,7 +113,7 @@ Type
 
 implementation
 
-Uses  Dialogs;
+{$IFNDEF FPC}Uses  Dialogs;{$ENDIF}
 
 CONST
   Commentchar = '!';
@@ -203,6 +204,7 @@ begin
    {Replace TokenBuffer with Variable value if first character is VariableDelimiter character}
    If Length(TokenBuffer) > 1 Then
       If TokenBuffer[1] = VariableDelimiter Then  // looking for '@'
+      Begin
             Dotpos   := pos('.', TokenBuffer);
             CaratPos := pos('^', TokenBuffer);
             If CaratPos > 0 Then  DotPos := CaratPos;   // Carat takes precedence
@@ -219,6 +221,7 @@ begin
                End
                Else ReplaceToDotPos(VariableValue);
             End;
+      End;
 end;
 
 {=======================================================================================================================}

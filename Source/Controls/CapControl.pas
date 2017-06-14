@@ -118,6 +118,7 @@ TYPE
        Property VmaxVal:Double Read ControlVars.Vmax;
        Property UseVoltageOverride:Boolean Read ControlVars.Voverride;
        Property DeadTimeVal:Double Read ControlVars.DeadTime;
+       Property PTPhase:Integer Read ControlVars.FPTPhase;
    end;
 
 
@@ -953,19 +954,22 @@ begin
                                   End
                                   ELSE // Reset
                                         PendingChange := CTRL_NONE;
-                          CTRL_CLOSE:  IF Vtest > OFF_Value
-                                  THEN Begin
-                                         PendingChange := CTRL_OPEN;
-                                         ShouldSwitch := TRUE;
-                                  End
-                                  ELSE  If ControlledCapacitor.AvailableSteps >0 Then Begin
-                                   IF Vtest < ON_Value THEN  Begin
-                                            PendingChange := CTRL_CLOSE;
-                                            ShouldSwitch := TRUE;
+                          CTRL_CLOSE:
+                                  Begin
+                                    PendingChange := CTRL_NONE;
+                                    IF Vtest > OFF_Value
+                                    THEN Begin
+                                           PendingChange := CTRL_OPEN;
+                                           ShouldSwitch := TRUE;
+                                    End
+                                    ELSE  If ControlledCapacitor.AvailableSteps >0 Then Begin
+                                      IF Vtest < ON_Value THEN  Begin
+                                              PendingChange := CTRL_CLOSE;
+                                              ShouldSwitch := TRUE;
+                                      End
                                     End;
-                                  End
-                                  ELSE // Reset
-                                        PendingChange := CTRL_NONE;
+                                  End;
+
                      End;
 
                  End;

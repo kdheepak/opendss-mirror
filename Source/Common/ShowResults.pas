@@ -39,14 +39,15 @@ Procedure ShowkVBaseMismatch(FileNm:String);
 Procedure ShowDeltaV(FileNm:String);
 Procedure ShowControlledElements(FileNm:String);
 Procedure ShowResult(FileNm:String);
+Procedure ShowEventLog(FileNm:String);
 
 implementation
 
 Uses uComplex,  Arraydef,  sysutils, Circuit, DSSClass, DSSClassDefs, DSSGlobals,
      uCMatrix,  solution,  CktElement, Utilities, Bus, MathUtil,
      PDElement, PCElement, Generator, Transformer, EnergyMeter, Load, RegControl,
-     ParserDel, CktTree,   DSSForms, Math, Line, LineUnits, LineGeometry, YMatrix,
-     SwtControl;
+     ParserDel, CktTree,   {$IFDEF FPC} CmdForms,{$ELSE} DSSForms,{$ENDIF}
+     Math, Line, LineUnits, LineGeometry, YMatrix, SwtControl, KLUSolve;
 
 VAR
    MaxBusNameLength :Integer;
@@ -1281,7 +1282,7 @@ Begin
      {Write Bus Voltage}
 
      Writeln(F);
-     Writeln(F,'  Bus   Mag:    V1 (kV)  p.u.    V2 (kV)  %V2/V1  V0 (kV)  %V0/V1');
+     Writeln(F,'Bus      V1 (kV)    p.u.    V2 (kV)      %V2/V1    V0 (kV)  %V0/V1');
      Writeln(F);
 
      WriteSeqVoltages(F, BusReference, FALSE);
@@ -1290,7 +1291,7 @@ Begin
      Writeln(F);
      Writeln(F,'SYMMETRICAL COMPONENT CURRENTS BY CIRCUIT ELEMENT (first 3 phases)');
      Writeln(F);
-     Writeln(F,'Element                      Term      I1         I2         %I2/I1    I0         %I0/I1   %Normal %Emergency');
+     Writeln(F,'Element                Term      I1         I2       %I2/I1       I0      %I0/I1   %Normal %Emergency');
      Writeln(F);
 
      // Sources first
@@ -1344,7 +1345,7 @@ Begin
           FOR j := 1 to NTerm Do
           Begin
             GetI0I1I2(I0, I1, I2, Cmax, PCElem.Nphases,(j-1)*Ncond, c_Buffer);
-            With PCElem Do WriteSeqCurrents(F, Paddots(FullName(PDElem), MaxDeviceNameLength+2), I0, I1, I2, Cmax,  0.0, 0.0, j, DSSObjType);
+            With PCElem Do WriteSeqCurrents(F, Paddots(FullName(PCelem), MaxDeviceNameLength+2), I0, I1, I2, Cmax,  0.0, 0.0, j, DSSObjType);
           End;
        End;
         PCElem := ActiveCircuit.PCElements.Next;
@@ -2166,7 +2167,7 @@ Begin
      Writeln(F);
      Writeln(F,'SYMMETRICAL COMPONENT CURRENTS BY CIRCUIT ELEMENT ');
      Writeln(F);
-     Writeln(F,'Element                      Term    I1      I2    %I2/I1    I0    %I0/I1 %Normal   %Emergency');
+     Writeln(F,'Element                             Term    I1    IOver %Normal  %Emerg     I2    %I2/I1    I0    %I0/I1');
      Writeln(F);
 
 
@@ -2210,12 +2211,13 @@ Begin
            THEN Begin
                Write(F, Pad(FullName(PDelem), MaxDeviceNameLength+2), j:3);
                Write(F, I1:8:1);
+               IF PDElem.Normamps > 0.0 Then  Write(F, (Cmax-PDElem.Normamps):8:2) Else Write(F,'     0.0');
+               IF PDElem.Normamps > 0.0  Then Write(F, Cmax/PDElem.Normamps*100.0:8:1)  Else Write(F,'     0.0');
+               IF PDElem.Emergamps > 0.0 Then Write(F, Cmax/PDElem.Emergamps*100.0:8:1) Else Write(F,'     0.0');
                Write(F, I2:8:1);
-               IF I1>0.0 THEN Write(F, 100.0*I2/I1:8:1) ELSE Write(F,'     0.0');
+               IF I1>0.0 Then Write(F, 100.0*I2/I1:8:1) Else Write(F,'     0.0');
                Write(F, I0:8:1);
-               IF I1>0.0 THEN Write(F, 100.0*I0/I1:8:1) ELSE Write(F,'     0.0');
-               IF PDElem.Normamps > 0.0  THEN Write(F, Cmax/PDElem.Normamps*100.0:8:1)  ELSE Write(F,'     0.0');
-               IF PDElem.Emergamps > 0.0 THEN Write(F, Cmax/PDElem.Emergamps*100.0:8:1) ELSE Write(F,'     0.0');
+               IF I1>0.0 Then Write(F, 100.0*I0/I1:8:1) Else Write(F,'     0.0');
                Writeln(F);
            END;
         End; {For}
@@ -3493,6 +3495,22 @@ Begin
      ParserVars.Add('@lastshowfile', FileNm);
   End;
 
+
+End;
+
+Procedure ShowEventLog(FileNm:String);
+
+
+Begin
+  Try
+
+     EventStrings.SaveToFile(FileNm);
+     GlobalResult := FileNm;
+
+  FINALLY
+     FireOffEditor(FileNm);
+     ParserVars.Add('@lastshowfile', FileNm);
+  End;
 
 End;
 

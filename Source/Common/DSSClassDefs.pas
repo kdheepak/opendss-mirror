@@ -61,6 +61,9 @@ CONST
       EXP_CONTROL      = 30 * 8;
       UPFC_ELEMENT     = 31 * 8;
       UPFC_CONTROL     = 32 * 8;
+      VCCS_ELEMENT     = 33 * 8;
+      ESPVL_CONTROL     = 34 * 8;
+      INDMACH012_ELEMENT = 35 * 8;
 
 VAR
    NumIntrinsicClasses,
@@ -86,6 +89,7 @@ USES
      Line,
      VSource,
      Isource,
+     VCCS,
      LineCode,
      Spectrum,
      WireData,
@@ -126,7 +130,9 @@ USES
      VSConverter,
      ExpControl,
      UPFC,
-     UPFCControl
+     UPFCControl,
+     ESPVLControl,
+     IndMach012
 ;
 
 
@@ -178,6 +184,7 @@ Begin
      DSSClasses.New := TLine.Create;
      DSSClasses.New := TVSource.Create;
      DSSClasses.New := TISource.Create;
+     DSSClasses.New := TVCCS.Create;
      DSSClasses.New := TLoad.Create;
      DSSClasses.New := TTransf.Create;
      DSSClasses.New := TRegControl.Create;
@@ -200,6 +207,8 @@ Begin
      DSSClasses.New := PVSystemClass;
      DSSClasses.New := TUPFC.Create;
      DSSClasses.New := TUPFCControl.Create;
+     DSSClasses.New := TESPVLControl.Create;
+     DSSClasses.New := TIndMach012.Create;
 
 
 

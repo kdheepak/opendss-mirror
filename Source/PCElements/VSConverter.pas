@@ -43,6 +43,7 @@ TYPE
       FMaxIdc:      Double;
       Fmode:        Integer;
       FNdc:         Integer;
+      LastCurrents: pComplexArray; // state memory for GetInjCurrents
     Public
       constructor Create(ParClass:TDSSClass; const FaultName:String);
       destructor Destroy; override;
@@ -309,6 +310,8 @@ begin
   DSSObjType := ParClass.DSSClassType;
   Name := LowerCase(FaultName);
 
+  LastCurrents := nil;
+
   // typically the first 3 "phases" are AC, and the last one is DC
   NPhases := 4;
   Fnconds := 4;
@@ -340,13 +343,18 @@ end;
 
 destructor TVSConverterObj.Destroy;
 begin
+  Reallocmem(LastCurrents, 0);
   inherited destroy;
 end;
 
 Procedure TVSConverterObj.RecalcElementData;
+var
+  i: Integer;
 begin
   if (FRac = 0.0) and (FXac = 0.0) then FRac := EPSILON;
   Reallocmem(InjCurrent, SizeOf(InjCurrent^[1])*Yorder);
+  Reallocmem(LastCurrents, SizeOf(LastCurrents^[1])*Yorder);
+  for i := 1 to Yorder do LastCurrents^[i] := CZERO;
 end;
 
 Procedure TVSConverterObj.CalcYPrim;
@@ -398,12 +406,15 @@ var
 begin
   try
     with ActiveCircuit.Solution do begin
-      for i := 1 to Yorder do Vterminal^[i] := NodeV^[NodeRef^[i]];
+      ComputeVTerminal;
       // add the injection currents from both AC and DC nodes, to the
       // currents from Yprim elements, which should be zero at the DC nodes
       YPrim.MVMult(Curr, Vterminal);
       GetInjCurrents(ComplexBuffer);
-      for i := 1 to Yorder do Curr^[i] := Csub(Curr^[i], ComplexBuffer^[i]);
+      for i := 1 to Yorder do begin
+        Curr^[i] := Csub(Curr^[i], ComplexBuffer^[i]);
+        LastCurrents^[i] := Curr^[i];
+      end;
     end;
   except
     on E: Exception
@@ -416,7 +427,7 @@ procedure TVSConverterObj.GetInjCurrents(Curr:pComplexArray);
 var
   Vmag: Complex;
   Vdc, Sphase, Stotal: Complex;
-  Pac, Qac, Deg, Idc, Idclim, Iaclim, Itmag : Double;
+  Pac, Deg, Idc, Idclim, Iaclim, Itmag : Double;
   i, Nac: integer;
 begin
 
@@ -436,20 +447,19 @@ begin
   ComputeVterminal;
   ITerminalUpdated := FALSE;
   GetTerminalCurrents (ITerminal);
-  for i := 1 to Nac do begin
-    Itmag := cabs(Iterminal^[i]);
-    if Itmag > Iaclim then begin
-      Itmag := Iaclim / Itmag;
-      Iterminal^[i].re := Iterminal^[i].re * Itmag;
-      Iterminal^[i].im := Iterminal^[i].im * Itmag;
-    end;
-  end;
+//  for i := 1 to Nac do begin
+//    Itmag := cabs(Iterminal^[i]);
+//    if Itmag > Iaclim then begin
+//      Itmag := Iaclim / Itmag;
+//      Iterminal^[i].re := Iterminal^[i].re * Itmag;
+//      Iterminal^[i].im := Iterminal^[i].im * Itmag;
+//    end;
+//  end;
 
   // do the AC voltage source injection - dependent voltage sources kept in ComplexBuffer
   Vdc := Vterminal^[FNphases];
   if (Vdc.re = 0.0) and (Vdc.im = 0.0) then Vdc.re := 1000.0 * FkVdc;
   Vmag := CMulReal (Vdc, 0.353553 * Fm);
-//  Vmag := cmplx (8000, 0);
   RotatePhasorDeg(Vmag, 1.0, Fd);
   ComplexBuffer^[1] := Vmag;
   Deg := -360.0 / Nac;
@@ -460,22 +470,23 @@ begin
   ComplexBuffer^[FNPhases] := CZERO;
   YPrim.MVMult(Curr, ComplexBuffer);
 
-  // calculate the converter AC power, exclusive of the losses
+  // calculate the converter AC power, exclusive of the losses, using LastCurrents
   Stotal.re := 0.0;
   Stotal.im := 0.0;
   for i := 1 to Nac do begin
+//    Sphase := Cmul (ComplexBuffer^[i], Conjg(LastCurrents^[i]));
     Sphase := Cmul (ComplexBuffer^[i], Conjg(Iterminal^[i]));
     Stotal := Cadd (Stotal, Sphase);
   end;
   Pac := Stotal.re;
-  Qac := Stotal.im;
+//  Qac := Stotal.im;
   if (Pac = 0.0) then Pac := 1000.0 * FkW;
 
   // DC current source injection
   Idc := Pac / Cabs(Vdc);
   if Idc > Idclim then Idc := Idclim;
   if Idc < -Idclim then Idc := -Idclim;
-//  Idc := 17.7781;
+
   Curr^[FNphases] := cmplx (Idc, 0.0);
   Curr^[2*FNphases] := cmplx (-Idc, 0.0);
   ITerminalUpdated := FALSE;
