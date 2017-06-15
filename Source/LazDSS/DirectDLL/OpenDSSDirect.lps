@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CONFIG>
   <ProjectSession>
-    <Version Value="9"/>
+    <Version Value="10"/>
     <BuildModes Active="Default"/>
     <Units Count="130">
       <Unit0>
         <Filename Value="OpenDSSDirect.lpr"/>
         <IsPartOfProject Value="True"/>
-        <TopLine Value="248"/>
-        <CursorPos Y="275"/>
+        <IsVisibleTab Value="True"/>
+        <CursorPos X="70" Y="10"/>
         <UsageCount Value="257"/>
         <Loaded Value="True"/>
         <DefaultSyntaxHighlighter Value="Delphi"/>
@@ -142,11 +142,10 @@
       <Unit22>
         <Filename Value="../Meters/EnergyMeter.pas"/>
         <IsPartOfProject Value="True"/>
-        <EditorIndex Value="2"/>
+        <EditorIndex Value="-1"/>
         <TopLine Value="1402"/>
         <CursorPos X="77" Y="1415"/>
         <UsageCount Value="257"/>
-        <Loaded Value="True"/>
         <DefaultSyntaxHighlighter Value="Delphi"/>
       </Unit22>
       <Unit23>
@@ -170,11 +169,10 @@
       <Unit26>
         <Filename Value="../Executive/ExecHelper.pas"/>
         <IsPartOfProject Value="True"/>
-        <EditorIndex Value="5"/>
+        <EditorIndex Value="-1"/>
         <TopLine Value="3165"/>
         <CursorPos X="5" Y="3179"/>
         <UsageCount Value="257"/>
-        <Loaded Value="True"/>
         <DefaultSyntaxHighlighter Value="Delphi"/>
       </Unit26>
       <Unit27>
@@ -526,11 +524,10 @@
       <Unit84>
         <Filename Value="../Common/TOPExport.pas"/>
         <IsPartOfProject Value="True"/>
-        <EditorIndex Value="3"/>
-        <TopLine Value="235"/>
+        <EditorIndex Value="-1"/>
+        <TopLine Value="215"/>
         <CursorPos X="24" Y="258"/>
         <UsageCount Value="257"/>
-        <Loaded Value="True"/>
         <DefaultSyntaxHighlighter Value="Delphi"/>
       </Unit84>
       <Unit85>
@@ -554,11 +551,10 @@
       <Unit88>
         <Filename Value="../Common/Utilities.pas"/>
         <IsPartOfProject Value="True"/>
-        <EditorIndex Value="6"/>
+        <EditorIndex Value="-1"/>
         <TopLine Value="692"/>
         <CursorPos X="39" Y="706"/>
         <UsageCount Value="257"/>
-        <Loaded Value="True"/>
         <DefaultSyntaxHighlighter Value="Delphi"/>
       </Unit88>
       <Unit89>
@@ -806,21 +802,18 @@
       </Unit126>
       <Unit127>
         <Filename Value="DPVSystems.pas"/>
-        <EditorIndex Value="4"/>
-        <TopLine Value="195"/>
+        <EditorIndex Value="-1"/>
+        <TopLine Value="196"/>
         <CursorPos X="34" Y="209"/>
         <UsageCount Value="128"/>
-        <Loaded Value="True"/>
         <DefaultSyntaxHighlighter Value="Delphi"/>
       </Unit127>
       <Unit128>
         <Filename Value="DVSources.pas"/>
-        <IsVisibleTab Value="True"/>
-        <EditorIndex Value="1"/>
-        <TopLine Value="131"/>
-        <CursorPos X="34" Y="140"/>
+        <EditorIndex Value="-1"/>
+        <TopLine Value="132"/>
+        <CursorPos X="93" Y="138"/>
         <UsageCount Value="128"/>
-        <Loaded Value="True"/>
         <DefaultSyntaxHighlighter Value="Delphi"/>
       </Unit128>
       <Unit129>
@@ -832,7 +825,7 @@
         <DefaultSyntaxHighlighter Value="Delphi"/>
       </Unit129>
     </Units>
-    <JumpHistory Count="18" HistoryIndex="17">
+    <JumpHistory Count="9" HistoryIndex="8">
       <Position1>
         <Filename Value="OpenDSSDirect.lpr"/>
       </Position1>
@@ -861,45 +854,13 @@
         <Caret Line="2" Column="53"/>
       </Position7>
       <Position8>
-        <Filename Value="DPVSystems.pas"/>
-        <Caret Line="12" Column="6"/>
-      </Position8>
-      <Position9>
-        <Filename Value="../Executive/ExecHelper.pas"/>
-      </Position9>
-      <Position10>
-        <Filename Value="../Common/Utilities.pas"/>
-      </Position10>
-      <Position11>
         <Filename Value="OpenDSSDirect.lpr"/>
         <Caret Line="17" Column="39"/>
-      </Position11>
-      <Position12>
-        <Filename Value="DVSources.pas"/>
-        <Caret Line="12" Column="6"/>
-      </Position12>
-      <Position13>
-        <Filename Value="DVSources.pas"/>
-        <Caret Line="137" Column="22" TopLine="126"/>
-      </Position13>
-      <Position14>
-        <Filename Value="../Meters/EnergyMeter.pas"/>
-      </Position14>
-      <Position15>
-        <Filename Value="../Common/TOPExport.pas"/>
-      </Position15>
-      <Position16>
-        <Filename Value="DPVSystems.pas"/>
-        <Caret Line="202" Column="90" TopLine="195"/>
-      </Position16>
-      <Position17>
+      </Position8>
+      <Position9>
         <Filename Value="OpenDSSDirect.lpr"/>
         <Caret Line="275" TopLine="247"/>
-      </Position17>
-      <Position18>
-        <Filename Value="DVSources.pas"/>
-        <Caret Line="136" Column="23" TopLine="126"/>
-      </Position18>
+      </Position9>
     </JumpHistory>
   </ProjectSession>
 </CONFIG>
